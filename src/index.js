@@ -41,13 +41,13 @@ export default {
     const jb = p.match(/^\/api\/jobs\/(\d+)(\/stop)?$/);
     if (jb) {
       if (jb[2] && m === "POST") return api.stopJob(env, me, Number(jb[1]));
-      if (m === "GET") return api.getJob(url, env, me, Number(jb[1]));
+      if (!jb[2] && m === "GET") return api.getJob(url, env, me, Number(jb[1]));
     }
 
     return json({ error: "not found" }, 404);
   },
 
-  async scheduled(_event, env) {
-    await tick(env);
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(tick(env));
   },
 };
