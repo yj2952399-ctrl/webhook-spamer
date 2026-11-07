@@ -1,0 +1,16 @@
+* { box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; max-width: 780px; margin: 0 auto; padding: 16px; background: #101014; color: #e8e8ea; }
+header { display: flex; justify-content: space-between; align-items: center; }
+h1 { font-size: 19px; margin: 0; letter-spacing: .04em; }
+button { background: #5865f2; color: #fff; border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; }
+button:hover { filter: brightness(1.15); }
+input, textarea, select { background: #1b1b20; color: #e8e8ea; border: 1px solid #2e2e36; border-radius: 6px; padding: 8px; width: 100%; }
+label { display: block; margin: 8px 0; font-size: 14px; }
+nav { display: flex; gap: 6px; margin: 18px 0; }
+#auth { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 24px; }
+#auth input { max-width: 220px; }
+ul { list-style: none; padding: 0; }
+li { padding: 8px 0; border-bottom: 1px solid #1f1f26; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+pre { background: #000; padding: 10px; height: 340px; overflow: auto; font-size: 12px; line-height: 1.5; }
+code { color: #8fb4ff; }
+.note { font-size: 13px; color: #9a9aa5; }
