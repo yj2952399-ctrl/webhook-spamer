@@ -1,0 +1,16 @@
+name = "raider"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "raider"
+database_id = "wrangler d1 create の出力を貼る"
+
+[triggers]
+crons = ["* * * * *"]
