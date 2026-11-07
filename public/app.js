@@ -4,17 +4,30 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
-  if (r.status === 401) { $("app").hidden = true; $("auth").hidden = false; throw new Error("401"); }
-  return r.json();
+  if (r.status === 401) {
+    $("app").hidden = true; $("auth").hidden = false;
+    throw new Error("401");
+  }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) data.__status = r.status;
+  return data;
 }
 
+const creds = () => ({ username: $("u").value.trim(), password: $("p").value });
+
 const register = async () => {
-  const r = await api("/api/register", { method: "POST", body: JSON.stringify({ username: $("u").value, password: $("p").value }) });
-  r.ok ? boot() : alert(r.error);
+  const r = await api("/api/register", { method: "POST", body: JSON.stringify(creds()) });
+  r.ok ? boot() : alert(r.error || "登録失敗");
 };
+
 const login = async () => {
-  const r = await api("/api/login", { method: "POST", body: JSON.stringify({ username: $("u").value, password: $("p").value }) });
-  r.ok ? boot() : alert(r.error);
+  const r = await api("/api/login", { method: "POST", body: JSON.stringify(creds()) });
+  r.ok ? boot() : alert(r.error || "ログイン失敗");
+};
+
+const logout = async () => {
+  await api("/api/logout", { method: "POST" });
+  location.reload();
 };
 
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
@@ -23,14 +36,17 @@ document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
 });
 
 async function boot() {
-  const me = await api("/api/me");
+  let me;
+  try { me = await api("/api/me"); } catch { return; }
   $("who").textContent = me.username;
   $("auth").hidden = true; $("app").hidden = false;
+
   const s = await api("/api/settings");
   for (const [k, v] of Object.entries(s)) {
     const el = $("s-" + k);
     if (!el) continue;
-    if (el.type === "checkbox") el.checked = !!v; else el.value = v;
+    if (el.type === "checkbox") el.checked = !!v;
+    else el.value = v ?? "";
   }
   loadHooks(); loadJobs();
 }
@@ -39,57 +55,102 @@ async function saveSettings() {
   const b = {};
   document.querySelectorAll("[id^=s-]").forEach((el) => {
     const k = el.id.slice(2);
-    b[k] = el.type === "checkbox" ? (el.checked ? 1 : 0)
-      : el.type === "number" ? Number(el.value) : el.value;
+    if (el.type === "checkbox") b[k] = el.checked ? 1 : 0;
+    else if (el.type === "number") { if (el.value !== "") b[k] = Number(el.value); }
+    else b[k] = el.value;
   });
-  await api("/api/settings", { method: "PUT", body: JSON.stringify(b) });
+
+  const r = await api("/api/settings", { method: "PUT", body: JSON.stringify(b) });
+  if (!r.ok) return alert(r.error || "保存失敗");
+
+  // 空欄はサーバー側で既定値に落ちるので、返ってきた実値で画面を同期する
+  if (r.settings) {
+    for (const [k, v] of Object.entries(r.settings)) {
+      const el = $("s-" + k);
+      if (!el) continue;
+      if (el.type === "checkbox") el.checked = !!v;
+      else el.value = v ?? "";
+    }
+  }
   alert("保存しました");
 }
 
 async function addHooks() {
-  await api("/api/webhooks", { method: "POST", body: JSON.stringify({ label: $("hlabel").value, urls: $("hurls").value }) });
-  $("hurls").value = ""; loadHooks();
+  const r = await api("/api/webhooks", {
+    method: "POST",
+    body: JSON.stringify({ label: $("hlabel").value, urls: $("hurls").value }),
+  });
+  if (!r.ok) return alert(r.error || "追加できませんでした");
+  $("hurls").value = "";
+  loadHooks();
 }
+
 async function loadHooks() {
   const list = await api("/api/webhooks");
-  $("hlist").innerHTML = list.map((h) =>
-    `<li><b>${esc(h.label || "-")}</b> <code>${esc(h.url.slice(-12))}</code>
-     <button onclick="delHook(${h.id})">削除</button></li>`).join("");
+  $("hlist").innerHTML = list.length
+    ? list.map((h) =>
+      `<li><b>${esc(h.label || "-")}</b> <code>…${esc(h.url.slice(-10))}</code>
+       <button onclick="delHook(${h.id})">削除</button></li>`).join("")
+    : `<li class="note">まだ登録がありません</li>`;
 }
+
 const delHook = async (id) => { await api("/api/webhooks/" + id, { method: "DELETE" }); loadHooks(); };
 
 async function startJob() {
-  const r = await api("/api/jobs", { method: "POST", body: JSON.stringify({ total: Number($("total").value) }) });
-  alert("ジョブ #" + r.id + " を登録しました");
+  const total = Number($("total").value);
+  if (!Number.isFinite(total) || total < 1) return alert("投稿数を入れてください");
+
+  const r = await api("/api/jobs", { method: "POST", body: JSON.stringify({ total }) });
+  if (!r.ok) return alert(r.error || "開始できませんでした");
+  alert("ジョブ #" + r.id + " を登録しました。最大 60 秒で動き出します。");
   loadJobs();
 }
 
 async function loadJobs() {
   const jobs = await api("/api/jobs");
-  $("jlist").innerHTML = jobs.map((j) =>
-    `<li>#${j.id} <b>${esc(j.status)}</b> ${j.sent}/${j.total}（失敗 ${j.failed}）
-     <button onclick="openJob(${j.id})">詳細</button>
-     ${["queued", "running"].includes(j.status) ? `<button onclick="stopJob(${j.id})">停止</button>` : ""}</li>`).join("");
+  $("jlist").innerHTML = jobs.length
+    ? jobs.map((j) =>
+      `<li>#${j.id} <b>${esc(j.status)}</b> ${j.sent}/${j.total}（失敗 ${j.failed}）
+       <button onclick="openJob(${j.id})">詳細</button>
+       ${["queued", "running"].includes(j.status) ? `<button onclick="stopJob(${j.id})">停止</button>` : ""}</li>`).join("")
+    : `<li class="note">履歴はありません</li>`;
 }
+
 const stopJob = async (id) => { await api(`/api/jobs/${id}/stop`, { method: "POST" }); loadJobs(); };
 
 let timer = null, lastId = 0;
 async function openJob(id) {
-  clearInterval(timer); lastId = 0;
+  clearInterval(timer);
+  lastId = 0;
   $("detail").innerHTML = `<h3>ジョブ #${id}</h3><pre id="logs"></pre>`;
+
   const tick = async () => {
-    const r = await api(`/api/jobs/${id}?after=${lastId}`);
+    let r;
+    try { r = await api(`/api/jobs/${id}?after=${lastId}`); }
+    catch { clearInterval(timer); return; }
+    if (!r.job) { clearInterval(timer); return; }
+
     const el = $("logs");
     for (const l of r.logs) {
       lastId = l.id;
       el.textContent += `${new Date(l.ts).toLocaleTimeString()} [${l.level}${l.code ? " " + l.code : ""}] ${l.msg}\n`;
     }
     el.scrollTop = el.scrollHeight;
+
     $("detail").querySelector("h3").textContent =
       `ジョブ #${id} — ${r.job.status} 成功 ${r.job.sent} / 失敗 ${r.job.failed}`;
-    if (["done", "stopped", "failed"].includes(r.job.status)) { clearInterval(timer); loadJobs(); }
+
+    if (["done", "stopped", "failed"].includes(r.job.status)) {
+      clearInterval(timer);
+      loadJobs();
+    }
   };
-  tick(); timer = setInterval(tick, 2000);
+
+  tick();
+  timer = setInterval(tick, 2000);
 }
+
+$("u").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+$("p").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 
 boot().catch(() => {});
