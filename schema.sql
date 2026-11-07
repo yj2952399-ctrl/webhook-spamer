@@ -1,37 +1,30 @@
-DROP TABLE IF EXISTS logs;
-DROP TABLE IF EXISTS jobs;
-DROP TABLE IF EXISTS webhooks;
-DROP TABLE IF EXISTS settings;
-DROP TABLE IF EXISTS sessions;
-DROP TABLE IF EXISTS users;
-
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
   pw_hash TEXT NOT NULL,
   pw_salt TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
-CREATE TABLE settings (
+CREATE TABLE IF NOT EXISTS settings (
   user_id INTEGER PRIMARY KEY,
   content TEXT, delay REAL, jitter REAL, concurrency INTEGER, retries INTEGER,
   ping_everyone INTEGER, embed INTEGER, embed_title TEXT, embed_desc TEXT,
   embed_color INTEGER, image TEXT, thumbnail TEXT, tts INTEGER,
   username_override TEXT, avatar TEXT, delete_webhook INTEGER, log_mode TEXT
 );
-CREATE TABLE webhooks (
+CREATE TABLE IF NOT EXISTS webhooks (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL,
   label TEXT,
   url TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
-CREATE TABLE jobs (
+CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL,
   status TEXT NOT NULL,
@@ -43,7 +36,7 @@ CREATE TABLE jobs (
   started_at INTEGER,
   finished_at INTEGER
 );
-CREATE TABLE logs (
+CREATE TABLE IF NOT EXISTS logs (
   id INTEGER PRIMARY KEY,
   job_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
@@ -53,8 +46,8 @@ CREATE TABLE logs (
   msg TEXT
 );
 
-CREATE INDEX idx_jobs_status ON jobs(status, id);
-CREATE INDEX idx_jobs_user ON jobs(user_id, id DESC);
-CREATE INDEX idx_logs_job ON logs(job_id, id);
-CREATE INDEX idx_hooks_user ON webhooks(user_id);
-CREATE INDEX idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id);
+CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_job ON logs(job_id, id);
+CREATE INDEX IF NOT EXISTS idx_hooks_user ON webhooks(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
