@@ -7,11 +7,15 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header><h1>Raider</h1><span id="who"></span></header>
+<header>
+  <h1>Raider</h1>
+  <span id="who"></span>
+  <button id="logout" hidden onclick="logout()">ログアウト</button>
+</header>
 
 <section id="auth">
-  <input id="u" placeholder="username">
-  <input id="p" type="password" placeholder="password (8+)">
+  <input id="u" placeholder="username" autocomplete="username">
+  <input id="p" type="password" placeholder="password (8+)" autocomplete="current-password">
   <button onclick="login()">ログイン</button>
   <button onclick="register()">新規登録</button>
 </section>
@@ -38,14 +42,14 @@
   </div>
 
   <div class="tab" id="tab-set" hidden>
-    <label>本文 <input id="s-content"></label>
+    <label>本文 <input id="s-content" placeholder="{i} で連番、{rand} で乱数"></label>
     <label>待機秒 <input id="s-delay" type="number" step="0.05" min="0" max="10"></label>
     <label>ゆらぎ <input id="s-jitter" type="number" step="0.05" min="0" max="5"></label>
     <label>並列 <input id="s-concurrency" type="number" min="1" max="3"></label>
     <label>再試行 <input id="s-retries" type="number" min="0" max="8"></label>
     <label>表示名偽装 <input id="s-username_override"></label>
     <label>アイコンURL <input id="s-avatar"></label>
-    <label>埋め込みタイトル <input id="s-embed_title"></label>
+    <label>埋め込みタイトル <input id="s-embed_title" placeholder="空なら本文で補完"></label>
     <label>埋め込み本文 <input id="s-embed_desc"></label>
     <label>画像URL <input id="s-image"></label>
     <label>サムネURL <input id="s-thumbnail"></label>
