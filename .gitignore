@@ -1,7 +1,0 @@
-__pycache__/
-*.pyc
-.venv/
-venv/
-hooks.txt
-lines.txt
-.env
