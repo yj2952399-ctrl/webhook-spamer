@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Raider</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header><h1>Raider</h1><span id="who"></span></header>
+
+<section id="auth">
+  <input id="u" placeholder="username">
+  <input id="p" type="password" placeholder="password (8+)">
+  <button onclick="login()">ログイン</button>
+  <button onclick="register()">新規登録</button>
+</section>
+
+<main id="app" hidden>
+  <nav>
+    <button data-tab="run">実行</button>
+    <button data-tab="hooks">Webhook</button>
+    <button data-tab="set">設定</button>
+    <button data-tab="jobs">履歴</button>
+  </nav>
+
+  <div class="tab" id="tab-run">
+    <p class="note">登録後、最大 60 秒でワーカーが拾います。1 分あたり約 40 通ずつ消化します。</p>
+    <label>投稿数 <input id="total" type="number" value="100" min="1" max="20000"></label>
+    <button onclick="startJob()">開始</button>
+  </div>
+
+  <div class="tab" id="tab-hooks" hidden>
+    <input id="hlabel" placeholder="ラベル">
+    <textarea id="hurls" rows="4" placeholder="URL を改行 or カンマ区切り"></textarea>
+    <button onclick="addHooks()">追加</button>
+    <ul id="hlist"></ul>
+  </div>
+
+  <div class="tab" id="tab-set" hidden>
+    <label>本文 <input id="s-content"></label>
+    <label>待機秒 <input id="s-delay" type="number" step="0.05" min="0" max="10"></label>
+    <label>ゆらぎ <input id="s-jitter" type="number" step="0.05" min="0" max="5"></label>
+    <label>並列 <input id="s-concurrency" type="number" min="1" max="3"></label>
+    <label>再試行 <input id="s-retries" type="number" min="0" max="8"></label>
+    <label>表示名偽装 <input id="s-username_override"></label>
+    <label>アイコンURL <input id="s-avatar"></label>
+    <label>埋め込みタイトル <input id="s-embed_title"></label>
+    <label>埋め込み本文 <input id="s-embed_desc"></label>
+    <label>画像URL <input id="s-image"></label>
+    <label>サムネURL <input id="s-thumbnail"></label>
+    <label>色 <input id="s-embed_color" type="number"></label>
+    <label><input id="s-ping_everyone" type="checkbox"> @everyone</label>
+    <label><input id="s-embed" type="checkbox"> 埋め込み</label>
+    <label><input id="s-tts" type="checkbox"> TTS</label>
+    <label><input id="s-delete_webhook" type="checkbox"> 完了後 Webhook 削除</label>
+    <label>ログ <select id="s-log_mode">
+      <option value="sample">サンプル（1/10＋エラー全件）</option>
+      <option value="all">全件</option>
+      <option value="errors">エラーのみ</option>
+    </select></label>
+    <button onclick="saveSettings()">保存</button>
+  </div>
+
+  <div class="tab" id="tab-jobs" hidden>
+    <ul id="jlist"></ul>
+    <div id="detail"></div>
+  </div>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
