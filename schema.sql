@@ -78,3 +78,9 @@ CREATE INDEX IF NOT EXISTS idx_hooks_user ON webhooks(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_locks_at ON locks(at);
+CREATE TABLE IF NOT EXISTS discord (
+  user_id INTEGER PRIMARY KEY,
+  token TEXT NOT NULL DEFAULT '',
+  guild_id TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL
+);
