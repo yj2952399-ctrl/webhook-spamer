@@ -1,4 +1,4 @@
-import { json } from "./util.js";
+import { json, clamp } from "./util.js";
 import { DEFAULT_SETTINGS, normalizeSettings, normalizeInput } from "./payload.js";
 import * as discord from "./discord.js";
 
@@ -6,10 +6,17 @@ const ACTIVE = ["queued", "running", "stopping"];
 const DONE = new Set(["done", "stopped", "failed"]);
 const mask = (t) => (t ? `${t.slice(0, 4)}…${t.slice(-4)}` : "");
 
+/* ---- 設定 ---- */
+
 export async function getSettings(env, me) {
   const row = await env.DB.prepare("SELECT * FROM settings WHERE user_id = ?").bind(me.id).first();
+  const tune = await env.DB.prepare("SELECT batch, lanes FROM tuning WHERE user_id=?").bind(me.id).first();
+
   const merged = normalizeInput(normalizeSettings(row || {}));
+  merged.batch = Math.round(clamp(tune?.batch, 10, 300, DEFAULT_SETTINGS.batch));
+  merged.lanes = Math.round(clamp(tune?.lanes, 1, 16, DEFAULT_SETTINGS.lanes));
   delete merged.user_id;
+
   return json(merged);
 }
 
@@ -34,6 +41,11 @@ export async function putSettings(req, env, me) {
     .bind(me.id, v.content, v.delay, v.jitter, v.concurrency, v.retries, v.ping_everyone,
       v.embed, v.embed_title, v.embed_desc, v.embed_color, v.image, v.thumbnail, v.tts,
       v.username_override, v.avatar, v.delete_webhook, v.log_mode).run();
+
+  await env.DB.prepare(
+    `INSERT INTO tuning (user_id, batch, lanes) VALUES (?,?,?)
+     ON CONFLICT(user_id) DO UPDATE SET batch=excluded.batch, lanes=excluded.lanes`)
+    .bind(me.id, v.batch, v.lanes).run();
 
   return json({ ok: true, settings: v });
 }
@@ -91,7 +103,12 @@ export async function clearHooks(env, me) {
 export async function getDiscord(env, me) {
   const row = await env.DB.prepare("SELECT token, guild_id FROM discord WHERE user_id=?")
     .bind(me.id).first();
-  return json({ ok: true, token_set: !!row?.token, token_hint: mask(row?.token), guild_id: row?.guild_id || "" });
+  return json({
+    ok: true,
+    token_set: !!row?.token,
+    token_hint: mask(row?.token),
+    guild_id: row?.guild_id || "",
+  });
 }
 
 export async function putDiscord(req, env, me) {
@@ -115,7 +132,9 @@ export async function putDiscord(req, env, me) {
 export async function checkDiscord(env, me) {
   const row = await env.DB.prepare("SELECT token, guild_id FROM discord WHERE user_id=?")
     .bind(me.id).first();
-  if (!row?.token || !row?.guild_id) return json({ ok: false, error: "トークンとサーバーIDを保存してください" }, 400);
+  if (!row?.token || !row?.guild_id) {
+    return json({ ok: false, error: "トークンとサーバーIDを保存してください" }, 400);
+  }
 
   try {
     const info = await discord.inspect(row.token, row.guild_id);
@@ -131,7 +150,9 @@ export async function autoHooks(req, env, me) {
 
   const row = await env.DB.prepare("SELECT token, guild_id FROM discord WHERE user_id=?")
     .bind(me.id).first();
-  if (!row?.token || !row?.guild_id) return json({ ok: false, error: "トークンとサーバーIDを保存してください" }, 400);
+  if (!row?.token || !row?.guild_id) {
+    return json({ ok: false, error: "トークンとサーバーIDを保存してください" }, 400);
+  }
 
   let info;
   try { info = await discord.inspect(row.token, row.guild_id); }
@@ -192,7 +213,13 @@ export async function createJob(req, env, me) {
   }
 
   const cfgRow = await env.DB.prepare("SELECT * FROM settings WHERE user_id=?").bind(me.id).first();
+  const tune = await env.DB.prepare("SELECT batch, lanes FROM tuning WHERE user_id=?").bind(me.id).first();
+
   const snapshot = normalizeInput(normalizeSettings(cfgRow || {}));
+  if (tune) {
+    snapshot.batch = Math.round(clamp(tune.batch, 10, 300, DEFAULT_SETTINGS.batch));
+    snapshot.lanes = Math.round(clamp(tune.lanes, 1, 16, DEFAULT_SETTINGS.lanes));
+  }
 
   const r = await env.DB.prepare(
     "INSERT INTO jobs (user_id,status,total,cfg,created_at) VALUES (?,?,?,?,?)")
