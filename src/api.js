@@ -1,6 +1,9 @@
 import { json } from "./util.js";
 import { DEFAULT_SETTINGS, normalizeSettings, normalizeInput } from "./payload.js";
 
+const ACTIVE = ["queued", "running", "stopping"];
+const DONE = new Set(["done", "stopped", "failed"]);
+
 export async function getSettings(env, me) {
   const row = await env.DB.prepare("SELECT * FROM settings WHERE user_id = ?").bind(me.id).first();
   const merged = normalizeInput(normalizeSettings(row || {}));
@@ -75,14 +78,31 @@ export async function listJobs(env, me) {
   return json(results);
 }
 
+/** 状態を問わず強制的に stopped にする（内部用） */
+async function forceStopRow(env, me, id) {
+  const nowMs = Date.now();
+  await env.DB.prepare(
+    `UPDATE jobs SET status='stopped', finished_at=?
+     WHERE id=? AND user_id=? AND status NOT IN ('done','stopped','failed')`)
+    .bind(nowMs, id, me.id).run();
+  await env.DB.prepare("DELETE FROM locks WHERE job_id=?").bind(id).run();
+}
+
 export async function createJob(req, env, me) {
   const b = await req.json().catch(() => ({}));
   const total = Math.round(Math.min(Math.max(Number(b.total) || 100, 1), 20000));
 
+  // 稼働中に見える行があっても、ロックが無い/古いなら死んでいるので潰して進む
   const active = await env.DB.prepare(
-    "SELECT id FROM jobs WHERE user_id=? AND status IN ('queued','running','stopping') LIMIT 1")
+    "SELECT id, status FROM jobs WHERE user_id=? AND status IN ('queued','running','stopping') ORDER BY id LIMIT 1")
     .bind(me.id).first();
-  if (active) return json({ error: `ジョブ #${active.id} がまだ動いています`, id: active.id }, 409);
+
+  if (active) {
+    const lock = await env.DB.prepare("SELECT at FROM locks WHERE job_id=?").bind(active.id).first();
+    const live = !!lock && lock.at > Date.now() - 45000;
+    if (live) return json({ error: `ジョブ #${active.id} がまだ動いています`, id: active.id }, 409);
+    await forceStopRow(env, me, active.id);
+  }
 
   const cfgRow = await env.DB.prepare("SELECT * FROM settings WHERE user_id=?").bind(me.id).first();
   const snapshot = normalizeInput(normalizeSettings(cfgRow || {}));
@@ -113,9 +133,50 @@ export async function getJob(url, env, me, id) {
   });
 }
 
-export async function stopJob(env, me, id) {
-  const r = await env.DB.prepare(
+/** force=true は即 stopped。状態が何であれ必ず効く */
+export async function stopJob(env, me, id, force) {
+  const job = await env.DB.prepare("SELECT id, status FROM jobs WHERE id=? AND user_id=?")
+    .bind(id, me.id).first();
+  if (!job) return json({ error: "not found" }, 404);
+
+  const nowMs = Date.now();
+
+  if (force) {
+    await forceStopRow(env, me, id);
+    await env.DB.prepare(
+      "INSERT INTO logs (job_id, user_id, ts, level, code, msg) VALUES (?,?,?,?,?,?)")
+      .bind(id, me.id, nowMs, "error", 0, "強制停止").run();
+    return json({ ok: true, status: "stopped", was: job.status });
+  }
+
+  if (DONE.has(job.status)) {
+    return json({ ok: true, status: job.status, already: true });
+  }
+
+  await env.DB.prepare(
     "UPDATE jobs SET status='stopping' WHERE id=? AND user_id=? AND status IN ('queued','running')")
     .bind(id, me.id).run();
+
+  return json({ ok: true, status: "stopping", was: job.status });
+}
+
+/** 全部まとめて強制停止 */
+export async function stopAllJobs(env, me) {
+  const nowMs = Date.now();
+  const r = await env.DB.prepare(
+    `UPDATE jobs SET status='stopped', finished_at=?
+     WHERE user_id=? AND status NOT IN ('done','stopped','failed')`).bind(nowMs, me.id).run();
+
+  await env.DB.prepare(
+    "DELETE FROM locks WHERE job_id IN (SELECT id FROM jobs WHERE user_id=?)").bind(me.id).run();
+
   return json({ ok: true, changed: r.meta.changes });
+}
+
+/** ジョブ行ごと削除。詰まった行の最終手段 */
+export async function deleteJob(env, me, id) {
+  await env.DB.prepare("DELETE FROM logs WHERE job_id=? AND user_id=?").bind(id, me.id).run();
+  await env.DB.prepare("DELETE FROM locks WHERE job_id=?").bind(id).run();
+  const r = await env.DB.prepare("DELETE FROM jobs WHERE id=? AND user_id=?").bind(id, me.id).run();
+  return json({ ok: true, deleted: r.meta.changes });
 }
