@@ -102,7 +102,14 @@ async function startJob() {
   const total = Number($("total").value);
   if (!Number.isFinite(total) || total < 1) return alert("投稿数を入れてください");
 
-  const r = await api("/api/jobs", { method: "POST", body: JSON.stringify({ total }) });
+  let r = await api("/api/jobs", { method: "POST", body: JSON.stringify({ total }) });
+
+  if (r.__status === 409) {
+    if (!confirm(`${r.error}\n強制停止してから開始しますか？`)) return;
+    await api("/api/jobs/stop-all", { method: "POST" });
+    r = await api("/api/jobs", { method: "POST", body: JSON.stringify({ total }) });
+  }
+
   if (!r.ok) return alert(r.error || "開始できませんでした");
   alert("ジョブ #" + r.id + " を登録しました。最大 60 秒で動き出します。");
   loadJobs();
@@ -114,7 +121,7 @@ async function loadJobs() {
 
   $("active").innerHTML = active.length
     ? active.map((j) =>
-      `<div class="card">実行中: #${j.id} <b>${esc(j.status)}</b> ${j.sent}/${j.total}
+      `<div class="card">稼働中: #${j.id} <b>${esc(j.status)}</b> ${j.sent}/${j.total}
         <button onclick="stopJob(${j.id})">停止</button>
         <button class="danger" onclick="forceStop(${j.id})">強制停止</button></div>`).join("")
     : `<div class="note">稼働中のジョブはありません</div>`;
@@ -128,24 +135,32 @@ async function loadJobs() {
        ${ACTIVE.includes(j.status)
         ? `<button onclick="stopJob(${j.id})">停止</button>
            <button class="danger" onclick="forceStop(${j.id})">強制停止</button>`
-        : ""}</li>`).join("")
+        : ""}
+       <button class="danger" onclick="deleteJob(${j.id})">削除</button></li>`).join("")
     : `<li class="note">履歴はありません</li>`;
 }
 
 const stopJob = async (id) => {
   const r = await api(`/api/jobs/${id}/stop`, { method: "POST" });
-  if (!r.changed) alert("すでに止まっています");
+  if (r.already) alert(`#${id} はすでに ${r.status} です`);
   loadJobs();
 };
 
 const forceStop = async (id) => {
   if (!confirm(`ジョブ #${id} を強制停止します。送信中の分は打ち切られます。`)) return;
-  await api(`/api/jobs/${id}/stop?force=1`, { method: "POST" });
+  const r = await api(`/api/jobs/${id}/stop?force=1`, { method: "POST" });
+  if (!r.ok) alert(r.error || "失敗しました");
+  loadJobs();
+};
+
+const deleteJob = async (id) => {
+  if (!confirm(`ジョブ #${id} とログを削除します。`)) return;
+  await api(`/api/jobs/${id}`, { method: "DELETE" });
   loadJobs();
 };
 
 const stopAll = async () => {
-  if (!confirm("稼働中・待機中のジョブを全部強制停止します。")) return;
+  if (!confirm("稼働中・待機中を全部強制停止します。")) return;
   const r = await api("/api/jobs/stop-all", { method: "POST" });
   alert(`${r.changed || 0} 件を停止しました`);
   loadJobs();
