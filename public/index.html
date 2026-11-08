@@ -29,7 +29,7 @@
   </nav>
 
   <div class="tab" id="tab-run">
-    <p class="note">登録後、最大 60 秒でワーカーが拾います。1 分あたり約 40 通ずつ消化します。</p>
+    <p class="note">登録後、最大 60 秒でワーカーが拾います。処理数とレーンで 1 分あたりの量が決まります。</p>
     <div id="active"></div>
     <button id="stopAll" class="danger" hidden onclick="stopAll()">全部 強制停止</button>
     <label>投稿数 <input id="total" type="number" value="100" min="1" max="20000"></label>
@@ -40,12 +40,17 @@
     <h2>手動追加</h2>
     <input id="hlabel" placeholder="ラベル">
     <textarea id="hurls" rows="4" placeholder="URL を改行 or カンマ区切り"></textarea>
-    <button onclick="addHooks()">追加</button>
-    <button class="danger" onclick="clearHooks()">全部削除</button>
+    <div class="row">
+      <button onclick="addHooks()">追加</button>
+      <button class="danger" onclick="clearHooks()">全部削除</button>
+    </div>
     <ul id="hlist"></ul>
 
     <h2>自動発行</h2>
-    <p class="note">トークンは Bot でもユーザーでも可。<b>Webhook の管理</b>権限があるチャンネルにだけ作ります。チャンネルあたり最大 10 個。</p>
+    <p class="note">
+      トークンは Bot でもユーザーでも可。<b>Webhook の管理</b>権限があるチャンネルにだけ作ります。
+      チャンネルあたり最大 10 個。発行後は下の一覧に入ります。
+    </p>
     <label>トークン <input id="d-token" type="password" placeholder="保存済みなら空欄でOK" autocomplete="off"></label>
     <label>サーバーID <input id="d-guild" placeholder="サーバー名を右クリック → ID をコピー"></label>
     <div class="row">
@@ -60,9 +65,10 @@
 
   <div class="tab" id="tab-set" hidden>
     <label>本文 <input id="s-content" placeholder="{i} で連番、{rand} で乱数"></label>
-    <label>待機秒 <input id="s-delay" type="number" step="0.05" min="0" max="10"></label>
+    <label>待機秒（Webhook 1 本あたり） <input id="s-delay" type="number" step="0.05" min="0" max="10"></label>
     <label>ゆらぎ <input id="s-jitter" type="number" step="0.05" min="0" max="5"></label>
-    <label>並列 <input id="s-concurrency" type="number" min="1" max="3"></label>
+    <label>同時送信レーン <input id="s-lanes" type="number" min="1" max="16"></label>
+    <label>1 回の処理数 <input id="s-batch" type="number" min="10" max="300"></label>
     <label>再試行 <input id="s-retries" type="number" min="0" max="8"></label>
     <label>表示名偽装 <input id="s-username_override"></label>
     <label>アイコンURL <input id="s-avatar"></label>
