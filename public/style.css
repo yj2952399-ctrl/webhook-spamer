@@ -39,3 +39,7 @@ button.danger { background: #da373c; }
   padding: 10px; margin: 10px 0; font-size: 14px;
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
 }
+h2 { font-size: 15px; margin: 22px 0 8px; color: #b9b9c4; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.ch { display: flex; align-items: center; gap: 6px; font-size: 14px; margin: 2px 0; }
+.ch input[type=checkbox] { width: auto; }
