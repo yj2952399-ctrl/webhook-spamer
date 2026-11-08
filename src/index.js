@@ -25,10 +25,18 @@ export default {
       if (m === "PUT") return api.putSettings(req, env, me);
     }
 
+    if (p === "/api/discord") {
+      if (m === "GET") return api.getDiscord(env, me);
+      if (m === "PUT") return api.putDiscord(req, env, me);
+    }
+    if (p === "/api/discord/check" && m === "POST") return api.checkDiscord(env, me);
+
     if (p === "/api/webhooks") {
       if (m === "GET") return api.listHooks(env, me);
       if (m === "POST") return api.addHooks(req, env, me);
+      if (m === "DELETE") return api.clearHooks(env, me);
     }
+    if (p === "/api/webhooks/auto" && m === "POST") return api.autoHooks(req, env, me);
 
     const wh = p.match(/^\/api\/webhooks\/(\d+)$/);
     if (wh && m === "DELETE") return api.delHook(env, me, Number(wh[1]));
