@@ -30,6 +30,10 @@
 
   <div class="tab" id="tab-run">
     <p class="note">登録後、最大 60 秒でワーカーが拾います。1 分あたり約 40 通ずつ消化します。</p>
+
+    <div id="active"></div>
+    <button id="stopAll" class="danger" hidden onclick="stopAll()">全部 強制停止</button>
+
     <label>投稿数 <input id="total" type="number" value="100" min="1" max="20000"></label>
     <button onclick="startJob()">開始</button>
   </div>
