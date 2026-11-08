@@ -51,6 +51,11 @@ async function boot() {
     if (el.type === "checkbox") el.checked = !!v;
     else el.value = v ?? "";
   }
+
+  const d = await api("/api/discord");
+  if (d.token_set) $("d-token").placeholder = `保存済み (${d.token_hint})`;
+  if (d.guild_id) $("d-guild").value = d.guild_id;
+
   loadHooks(); loadJobs();
 }
 
@@ -77,6 +82,8 @@ async function saveSettings() {
   alert("保存しました");
 }
 
+/* ---- Webhook 手動 ---- */
+
 async function addHooks() {
   const r = await api("/api/webhooks", {
     method: "POST",
@@ -84,6 +91,7 @@ async function addHooks() {
   });
   if (!r.ok) return alert(r.error || "追加できませんでした");
   $("hurls").value = "";
+  alert(`${r.added} 件追加（${r.skipped || 0} 件は重複）`);
   loadHooks();
 }
 
@@ -98,6 +106,66 @@ async function loadHooks() {
 
 const delHook = async (id) => { await api("/api/webhooks/" + id, { method: "DELETE" }); loadHooks(); };
 
+const clearHooks = async () => {
+  if (!confirm("登録済みの Webhook を全部消します。")) return;
+  const r = await api("/api/webhooks", { method: "DELETE" });
+  alert(`${r.deleted || 0} 件削除しました`);
+  loadHooks();
+};
+
+/* ---- トークン / 自動発行 ---- */
+
+async function saveDiscord() {
+  const r = await api("/api/discord", {
+    method: "PUT",
+    body: JSON.stringify({ token: $("d-token").value, guild_id: $("d-guild").value }),
+  });
+  if (!r.ok) return alert(r.error || "保存失敗");
+  $("d-token").value = "";
+  $("d-token").placeholder = "保存済み";
+  alert("保存しました");
+}
+
+async function checkDiscord() {
+  $("d-info").textContent = "確認中…";
+  $("d-channels").innerHTML = "";
+  const r = await api("/api/discord/check", { method: "POST" });
+  if (!r.ok) { $("d-info").textContent = r.error || "確認失敗"; return; }
+
+  const usable = r.channels.filter((c) => c.can).length;
+  $("d-info").innerHTML =
+    `${esc(r.user.bot ? "BOT" : "ユーザー")} <b>${esc(r.user.name)}</b> / ` +
+    `サーバー <b>${esc(r.guild.name)}</b> — 発行可能 ${usable} チャンネル`;
+
+  $("d-channels").innerHTML = r.channels.length
+    ? r.channels.map((c) =>
+      `<label class="ch"><input type="checkbox" value="${c.id}" ${c.can ? "checked" : "disabled"}>
+       #${esc(c.name)}${c.can ? "" : " <span class=\"note\">権限なし</span>"}</label>`).join("")
+    : `<div class="note">テキストチャンネルが見つかりません</div>`;
+}
+
+async function autoHooks() {
+  const channels = [...document.querySelectorAll("#d-channels input:checked")].map((el) => el.value);
+  const count = Number($("d-count").value);
+  if (!Number.isFinite(count) || count < 1) return alert("発行数を入れてください");
+
+  if (!confirm(`${count} 個の Webhook を発行します。よろしいですか？`)) return;
+
+  const r = await api("/api/webhooks/auto", {
+    method: "POST",
+    body: JSON.stringify({ count, channels }),
+  });
+
+  if (!r.ok) return alert(r.error || "発行できませんでした");
+
+  let msg = `${r.added} 件登録しました（対象 ${r.channels} チャンネル）`;
+  if (r.errors?.length) msg += `\n\n失敗:\n${r.errors.join("\n")}`;
+  alert(msg);
+  loadHooks();
+}
+
+/* ---- ジョブ ---- */
+
 async function startJob() {
   const total = Number($("total").value);
   if (!Number.isFinite(total) || total < 1) return alert("投稿数を入れてください");
@@ -110,7 +178,7 @@ async function startJob() {
     r = await api("/api/jobs", { method: "POST", body: JSON.stringify({ total }) });
   }
 
-  if (!r.ok) return alert(r.error || "開始できませんでした");
+  if (!r.id) return alert(r.error || "開始できませんでした");
   alert("ジョブ #" + r.id + " を登録しました。最大 60 秒で動き出します。");
   loadJobs();
 }
