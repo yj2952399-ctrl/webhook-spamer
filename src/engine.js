@@ -6,6 +6,19 @@ const BATCH_MAX = 40;      // 1 回の起動で送る上限（CPU 10ms 対策）
 const LOCK_MS = 45000;     // 二重起動よけ。WALL_BUDGET より長くする
 const DONE = new Set(["done", "stopped", "failed"]);
 
+/** ロック取得。既に他が持っていて期限内なら false */
+async function acquire(env, jobId) {
+  const t = now();
+  const r = await env.DB.prepare(
+    `INSERT INTO locks (job_id, at) VALUES (?, ?)
+     ON CONFLICT(job_id) DO UPDATE SET at = excluded.at
+     WHERE locks.at < ?`).bind(jobId, t, t - LOCK_MS).run();
+  return (r.meta.changes || 0) > 0;
+}
+
+const release = (env, jobId) =>
+  env.DB.prepare("DELETE FROM locks WHERE job_id=?").bind(jobId).run();
+
 async function writeLog(env, job, level, code, msg, cfg) {
   const keep = level === "error" || cfg.log_mode === "all"
     || (cfg.log_mode === "sample" && Math.random() < 0.1);
@@ -75,16 +88,10 @@ async function sendOne(env, job, cfg, hook, n, st) {
 export async function runJob(env, job) {
   const started = now();
 
-  // 単一実行のロック取得（他インスタンスが掴んでいれば諦める）
-  const claim = await env.DB.prepare(
-    `UPDATE jobs SET status='running', started_at=COALESCE(started_at,?), lock_at=?
-     WHERE id=? AND status IN ('queued','running')
-       AND (lock_at IS NULL OR lock_at < ?)`)
-    .bind(started, started, job.id, started - LOCK_MS).run();
-  if (!claim.meta.changes) return;
+  if (!(await acquire(env, job.id))) return;
 
   const fresh = await env.DB.prepare("SELECT * FROM jobs WHERE id=?").bind(job.id).first();
-  if (!fresh || DONE.has(fresh.status)) return;
+  if (!fresh || DONE.has(fresh.status)) { await release(env, job.id); return; }
 
   let cfg;
   try {
@@ -96,12 +103,15 @@ export async function runJob(env, job) {
   cfg.delay = clamp(cfg.delay, 0, 10, DEFAULT_SETTINGS.delay);
   cfg.jitter = clamp(cfg.jitter, 0, 5, DEFAULT_SETTINGS.jitter);
 
-  const finish = (status) => env.DB.prepare(
-    "UPDATE jobs SET status=?, sent=?, failed=?, finished_at=?, lock_at=NULL WHERE id=?")
-    .bind(status, st.sent, st.failed, DONE.has(status) ? Date.now() : null, fresh.id).run();
-
   const st = { sent: fresh.sent || 0, failed: fresh.failed || 0, claimed: 0, stop: false };
   st.claimed = st.sent + st.failed;
+
+  const finish = async (status) => {
+    await env.DB.prepare(
+      "UPDATE jobs SET status=?, sent=?, failed=?, finished_at=? WHERE id=?")
+      .bind(status, st.sent, st.failed, DONE.has(status) ? Date.now() : null, fresh.id).run();
+    await release(env, fresh.id);
+  };
 
   const { results: hooks } = await env.DB.prepare(
     "SELECT id, label, url FROM webhooks WHERE user_id = ? ORDER BY id").bind(fresh.user_id).all();
@@ -116,6 +126,15 @@ export async function runJob(env, job) {
     await finish("done");
     return;
   }
+
+  if (fresh.status === "stopping") {
+    await finish("stopped");
+    return;
+  }
+
+  await env.DB.prepare(
+    "UPDATE jobs SET status='running', started_at=COALESCE(started_at,?) WHERE id=?")
+    .bind(started, fresh.id).run();
 
   const deadline = started + WALL_BUDGET;
   const batchEnd = st.claimed + BATCH_MAX;
@@ -160,10 +179,13 @@ export async function runJob(env, job) {
 
 export async function tick(env) {
   const stale = Date.now() - LOCK_MS;
+  try { await env.DB.prepare("DELETE FROM locks WHERE at < ?").bind(stale).run(); } catch {}
+
   const { results } = await env.DB.prepare(
-    `SELECT * FROM jobs
-     WHERE status IN ('queued','running') AND (lock_at IS NULL OR lock_at < ?)
-     ORDER BY id LIMIT 3`).bind(stale).all();
+    `SELECT j.* FROM jobs j
+     LEFT JOIN locks l ON l.job_id = j.id
+     WHERE j.status IN ('queued','running') AND (l.at IS NULL OR l.at < ?)
+     ORDER BY j.id LIMIT 3`).bind(stale).all();
 
   await Promise.all(results.map((j) => runJob(env, j).catch(() => {})));
 }
