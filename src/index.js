@@ -38,9 +38,15 @@ export default {
       if (m === "POST") return api.createJob(req, env, me);
     }
 
+    // stop-all は /:id より先に判定する
+    if (p === "/api/jobs/stop-all" && m === "POST") return api.stopAllJobs(env, me);
+
     const jb = p.match(/^\/api\/jobs\/(\d+)(\/stop)?$/);
     if (jb) {
-      if (jb[2] && m === "POST") return api.stopJob(env, me, Number(jb[1]));
+      if (jb[2] && m === "POST") {
+        const force = ["1", "true", "yes"].includes(url.searchParams.get("force") || "");
+        return api.stopJob(env, me, Number(jb[1]), force);
+      }
       if (!jb[2] && m === "GET") return api.getJob(url, env, me, Number(jb[1]));
     }
 
