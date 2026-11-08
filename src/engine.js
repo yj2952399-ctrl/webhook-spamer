@@ -6,7 +6,6 @@ const BATCH_MAX = 40;      // 1 回の起動で送る上限（CPU 10ms 対策）
 const LOCK_MS = 45000;     // 二重起動よけ。WALL_BUDGET より長くする
 const DONE = new Set(["done", "stopped", "failed"]);
 
-/** ロック取得。既に他が持っていて期限内なら false */
 async function acquire(env, jobId) {
   const t = now();
   const r = await env.DB.prepare(
@@ -30,7 +29,6 @@ async function writeLog(env, job, level, code, msg, cfg) {
   } catch {}
 }
 
-/** 中断可能な待機。st.stop が立ったら即座に返る */
 async function nap(st, ms) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -58,8 +56,8 @@ async function sendOne(env, job, cfg, hook, n, st) {
         signal: ctrl.signal,
       });
     } catch (e) {
-      if (ctrl.signal.aborted) { st.ctrls.delete(ctrl); return; }
       st.ctrls.delete(ctrl);
+      if (ctrl.signal.aborted) return;
       if (attempt >= cfg.retries) break;
       await nap(st, 600 * (attempt + 1));
       continue;
@@ -106,7 +104,6 @@ async function sendOne(env, job, cfg, hook, n, st) {
 
 export async function runJob(env, job) {
   const started = now();
-
   if (!(await acquire(env, job.id))) return;
 
   const fresh = await env.DB.prepare("SELECT * FROM jobs WHERE id=?").bind(job.id).first();
@@ -122,13 +119,11 @@ export async function runJob(env, job) {
   cfg.delay = clamp(cfg.delay, 0, 10, DEFAULT_SETTINGS.delay);
   cfg.jitter = clamp(cfg.jitter, 0, 5, DEFAULT_SETTINGS.jitter);
 
-  // ctrls: 飛んでいる fetch を強制停止時に切るための入れ物
   const st = { sent: fresh.sent || 0, failed: fresh.failed || 0, claimed: 0, stop: false, hard: false, ctrls: new Set() };
   st.claimed = st.sent + st.failed;
 
   const finish = async (status) => {
     if (st.hard) {
-      // 既に stopped になっている。件数だけ反映する
       await env.DB.prepare("UPDATE jobs SET sent=?, failed=? WHERE id=?")
         .bind(st.sent, st.failed, fresh.id).run();
     } else {
@@ -138,6 +133,13 @@ export async function runJob(env, job) {
     }
     await release(env, fresh.id);
   };
+
+  // stopping で拾われた場合は、そのまま畳む（tick が stopping も拾うようにしたため）
+  if (fresh.status === "stopping") {
+    await finish("stopped");
+    await writeLog(env, fresh, "ok", 0, `終了 成功 ${st.sent} / 失敗 ${st.failed}`, cfg);
+    return;
+  }
 
   const { results: hooks } = await env.DB.prepare(
     "SELECT id, label, url FROM webhooks WHERE user_id = ? ORDER BY id").bind(fresh.user_id).all();
@@ -149,12 +151,12 @@ export async function runJob(env, job) {
   }
 
   if (st.claimed >= fresh.total) { await finish("done"); return; }
-  if (fresh.status === "stopping" || fresh.status === "stopped") { await finish("stopped"); return; }
 
   await env.DB.prepare(
     "UPDATE jobs SET status='running', started_at=COALESCE(started_at,?) WHERE id=?")
     .bind(started, fresh.id).run();
 
+  const before = st.claimed;
   const deadline = started + WALL_BUDGET;
   const batchEnd = st.claimed + BATCH_MAX;
   let lastCheck = 0;
@@ -188,11 +190,16 @@ export async function runJob(env, job) {
   }));
 
   const done = st.sent + st.failed >= fresh.total;
-  await finish(done ? "done" : st.stop ? "stopped" : "running");
+  const progressed = st.sent + st.failed > before;
+
+  // 進捗ゼロで終わったら failed にして running のまま残さない
+  await finish(done ? "done" : st.stop ? "stopped" : progressed ? "running" : "failed");
 
   if (done || st.stop) {
     await writeLog(env, fresh, "ok", 0,
       `${st.hard ? "強制停止" : "終了"} 成功 ${st.sent} / 失敗 ${st.failed}`, cfg);
+  } else if (!progressed) {
+    await writeLog(env, fresh, "error", 0, "進捗なしのため中断", cfg);
   }
 
   if (done && cfg.delete_webhook) {
@@ -206,10 +213,11 @@ export async function tick(env) {
   const stale = Date.now() - LOCK_MS;
   try { await env.DB.prepare("DELETE FROM locks WHERE at < ?").bind(stale).run(); } catch {}
 
+  // stopping も拾う（拾わないと永久に残る）
   const { results } = await env.DB.prepare(
     `SELECT j.* FROM jobs j
      LEFT JOIN locks l ON l.job_id = j.id
-     WHERE j.status IN ('queued','running') AND (l.at IS NULL OR l.at < ?)
+     WHERE j.status IN ('queued','running','stopping') AND (l.at IS NULL OR l.at < ?)
      ORDER BY j.id LIMIT 3`).bind(stale).all();
 
   await Promise.all(results.map((j) => runJob(env, j).catch(() => {})));
