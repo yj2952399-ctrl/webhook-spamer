@@ -52,8 +52,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   cfg TEXT,
   created_at INTEGER NOT NULL,
   started_at INTEGER,
-  finished_at INTEGER,
-  lock_at INTEGER
+  finished_at INTEGER
+);
+
+-- 実行ロック。jobs に列を足さないので既存 DB でもそのまま流せる
+CREATE TABLE IF NOT EXISTS locks (
+  job_id INTEGER PRIMARY KEY,
+  at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS logs (
@@ -68,8 +73,8 @@ CREATE TABLE IF NOT EXISTS logs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id);
 CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id, id DESC);
-CREATE INDEX IF NOT EXISTS idx_jobs_lock ON jobs(status, lock_at);
 CREATE INDEX IF NOT EXISTS idx_logs_job ON logs(job_id, id);
 CREATE INDEX IF NOT EXISTS idx_hooks_user ON webhooks(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_locks_at ON locks(at);
