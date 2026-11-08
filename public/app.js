@@ -2,6 +2,8 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+const ACTIVE = ["queued", "running", "stopping"];
+
 async function api(path, opts = {}) {
   const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
   if (r.status === 401) {
@@ -40,6 +42,7 @@ async function boot() {
   try { me = await api("/api/me"); } catch { return; }
   $("who").textContent = me.username;
   $("auth").hidden = true; $("app").hidden = false;
+  $("logout").hidden = false;
 
   const s = await api("/api/settings");
   for (const [k, v] of Object.entries(s)) {
@@ -63,7 +66,6 @@ async function saveSettings() {
   const r = await api("/api/settings", { method: "PUT", body: JSON.stringify(b) });
   if (!r.ok) return alert(r.error || "保存失敗");
 
-  // 空欄はサーバー側で既定値に落ちるので、返ってきた実値で画面を同期する
   if (r.settings) {
     for (const [k, v] of Object.entries(r.settings)) {
       const el = $("s-" + k);
@@ -108,15 +110,46 @@ async function startJob() {
 
 async function loadJobs() {
   const jobs = await api("/api/jobs");
+  const active = jobs.filter((j) => ACTIVE.includes(j.status));
+
+  $("active").innerHTML = active.length
+    ? active.map((j) =>
+      `<div class="card">実行中: #${j.id} <b>${esc(j.status)}</b> ${j.sent}/${j.total}
+        <button onclick="stopJob(${j.id})">停止</button>
+        <button class="danger" onclick="forceStop(${j.id})">強制停止</button></div>`).join("")
+    : `<div class="note">稼働中のジョブはありません</div>`;
+
+  $("stopAll").hidden = !active.length;
+
   $("jlist").innerHTML = jobs.length
     ? jobs.map((j) =>
       `<li>#${j.id} <b>${esc(j.status)}</b> ${j.sent}/${j.total}（失敗 ${j.failed}）
        <button onclick="openJob(${j.id})">詳細</button>
-       ${["queued", "running"].includes(j.status) ? `<button onclick="stopJob(${j.id})">停止</button>` : ""}</li>`).join("")
+       ${ACTIVE.includes(j.status)
+        ? `<button onclick="stopJob(${j.id})">停止</button>
+           <button class="danger" onclick="forceStop(${j.id})">強制停止</button>`
+        : ""}</li>`).join("")
     : `<li class="note">履歴はありません</li>`;
 }
 
-const stopJob = async (id) => { await api(`/api/jobs/${id}/stop`, { method: "POST" }); loadJobs(); };
+const stopJob = async (id) => {
+  const r = await api(`/api/jobs/${id}/stop`, { method: "POST" });
+  if (!r.changed) alert("すでに止まっています");
+  loadJobs();
+};
+
+const forceStop = async (id) => {
+  if (!confirm(`ジョブ #${id} を強制停止します。送信中の分は打ち切られます。`)) return;
+  await api(`/api/jobs/${id}/stop?force=1`, { method: "POST" });
+  loadJobs();
+};
+
+const stopAll = async () => {
+  if (!confirm("稼働中・待機中のジョブを全部強制停止します。")) return;
+  const r = await api("/api/jobs/stop-all", { method: "POST" });
+  alert(`${r.changed || 0} 件を停止しました`);
+  loadJobs();
+};
 
 let timer = null, lastId = 0;
 async function openJob(id) {
@@ -152,5 +185,7 @@ async function openJob(id) {
 
 $("u").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 $("p").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+
+setInterval(() => { if (!$("app").hidden) loadJobs().catch(() => {}); }, 5000);
 
 boot().catch(() => {});
