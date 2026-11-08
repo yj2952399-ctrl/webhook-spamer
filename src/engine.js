@@ -30,23 +30,41 @@ async function writeLog(env, job, level, code, msg, cfg) {
   } catch {}
 }
 
+/** 中断可能な待機。st.stop が立ったら即座に返る */
+async function nap(st, ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (st.stop) return;
+    await sleep(Math.min(250, end - Date.now()));
+  }
+}
+
 async function sendOne(env, job, cfg, hook, n, st) {
+  if (st.stop) return;
   const body = JSON.stringify(build(cfg, n));
   const tag = hook.label || String(hook.url).slice(-8);
 
   for (let attempt = 0; attempt <= cfg.retries; attempt++) {
+    if (st.stop) return;
+
+    const ctrl = new AbortController();
+    st.ctrls.add(ctrl);
     let res;
     try {
       res = await fetch(hook.url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
+        signal: ctrl.signal,
       });
     } catch (e) {
+      if (ctrl.signal.aborted) { st.ctrls.delete(ctrl); return; }
+      st.ctrls.delete(ctrl);
       if (attempt >= cfg.retries) break;
-      await sleep(600 * (attempt + 1));
+      await nap(st, 600 * (attempt + 1));
       continue;
     }
+    st.ctrls.delete(ctrl);
 
     if (res.status === 200 || res.status === 204) {
       st.sent++;
@@ -58,7 +76,7 @@ async function sendOne(env, job, cfg, hook, n, st) {
       let w = 1;
       try { w = Number((await res.json()).retry_after) || 1; }
       catch { w = Number(res.headers.get("retry-after")) || 1; }
-      await sleep(Math.min(w, 8) * 1000);
+      await nap(st, Math.min(w, 8) * 1000);
       continue;
     }
 
@@ -70,7 +88,7 @@ async function sendOne(env, job, cfg, hook, n, st) {
 
     if (res.status >= 500) {
       if (attempt >= cfg.retries) break;
-      await sleep(800 * (attempt + 1));
+      await nap(st, 800 * (attempt + 1));
       continue;
     }
 
@@ -81,6 +99,7 @@ async function sendOne(env, job, cfg, hook, n, st) {
     return;
   }
 
+  if (st.stop) return;
   st.failed++;
   await writeLog(env, job, "error", 0, `再試行上限: ${tag}`, cfg);
 }
@@ -103,13 +122,20 @@ export async function runJob(env, job) {
   cfg.delay = clamp(cfg.delay, 0, 10, DEFAULT_SETTINGS.delay);
   cfg.jitter = clamp(cfg.jitter, 0, 5, DEFAULT_SETTINGS.jitter);
 
-  const st = { sent: fresh.sent || 0, failed: fresh.failed || 0, claimed: 0, stop: false };
+  // ctrls: 飛んでいる fetch を強制停止時に切るための入れ物
+  const st = { sent: fresh.sent || 0, failed: fresh.failed || 0, claimed: 0, stop: false, hard: false, ctrls: new Set() };
   st.claimed = st.sent + st.failed;
 
   const finish = async (status) => {
-    await env.DB.prepare(
-      "UPDATE jobs SET status=?, sent=?, failed=?, finished_at=? WHERE id=?")
-      .bind(status, st.sent, st.failed, DONE.has(status) ? Date.now() : null, fresh.id).run();
+    if (st.hard) {
+      // 既に stopped になっている。件数だけ反映する
+      await env.DB.prepare("UPDATE jobs SET sent=?, failed=? WHERE id=?")
+        .bind(st.sent, st.failed, fresh.id).run();
+    } else {
+      await env.DB.prepare(
+        "UPDATE jobs SET status=?, sent=?, failed=?, finished_at=? WHERE id=?")
+        .bind(status, st.sent, st.failed, DONE.has(status) ? Date.now() : null, fresh.id).run();
+    }
     await release(env, fresh.id);
   };
 
@@ -122,15 +148,8 @@ export async function runJob(env, job) {
     return;
   }
 
-  if (st.claimed >= fresh.total) {
-    await finish("done");
-    return;
-  }
-
-  if (fresh.status === "stopping") {
-    await finish("stopped");
-    return;
-  }
+  if (st.claimed >= fresh.total) { await finish("done"); return; }
+  if (fresh.status === "stopping" || fresh.status === "stopped") { await finish("stopped"); return; }
 
   await env.DB.prepare(
     "UPDATE jobs SET status='running', started_at=COALESCE(started_at,?) WHERE id=?")
@@ -141,10 +160,15 @@ export async function runJob(env, job) {
   let lastCheck = 0;
 
   const checkStop = async () => {
-    if (Date.now() - lastCheck < 1500) return st.stop;
+    if (Date.now() - lastCheck < 600) return st.stop;
     lastCheck = Date.now();
     const r = await env.DB.prepare("SELECT status FROM jobs WHERE id=?").bind(fresh.id).first();
     if (r?.status === "stopping") st.stop = true;
+    if (r?.status === "stopped" || DONE.has(r?.status)) {
+      st.stop = true;
+      st.hard = true;
+      for (const c of st.ctrls) c.abort();
+    }
     return st.stop;
   };
 
@@ -159,7 +183,7 @@ export async function runJob(env, job) {
       const hook = hooks[i++ % hooks.length];
       st.claimed++;
       await sendOne(env, fresh, cfg, hook, st.claimed, st);
-      await sleep(cfg.delay * 1000 + Math.random() * cfg.jitter * 1000);
+      await nap(st, cfg.delay * 1000 + Math.random() * cfg.jitter * 1000);
     }
   }));
 
@@ -167,7 +191,8 @@ export async function runJob(env, job) {
   await finish(done ? "done" : st.stop ? "stopped" : "running");
 
   if (done || st.stop) {
-    await writeLog(env, fresh, "ok", 0, `終了 成功 ${st.sent} / 失敗 ${st.failed}`, cfg);
+    await writeLog(env, fresh, "ok", 0,
+      `${st.hard ? "強制停止" : "終了"} 成功 ${st.sent} / 失敗 ${st.failed}`, cfg);
   }
 
   if (done && cfg.delete_webhook) {
