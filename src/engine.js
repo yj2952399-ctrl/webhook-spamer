@@ -1,10 +1,10 @@
 import { sleep, now, clamp } from "./util.js";
 import { build, DEFAULT_SETTINGS, normalizeSettings } from "./payload.js";
 
-const WALL_BUDGET = 40000; // 実行を打ち切るまでのミリ秒
-const BATCH_MAX = 40;      // 1 回の起動で送る上限（CPU 10ms 対策）
-const LOCK_MS = 45000;     // 二重起動よけ。WALL_BUDGET より長くする
+const WALL_BUDGET = 40000;
+const LOCK_MS = 45000;
 const DONE = new Set(["done", "stopped", "failed"]);
+const DEAD = new Set([401, 403, 404]);
 
 async function acquire(env, jobId) {
   const t = now();
@@ -18,88 +18,87 @@ async function acquire(env, jobId) {
 const release = (env, jobId) =>
   env.DB.prepare("DELETE FROM locks WHERE job_id=?").bind(jobId).run();
 
-async function writeLog(env, job, level, code, msg, cfg) {
-  const keep = level === "error" || cfg.log_mode === "all"
-    || (cfg.log_mode === "sample" && Math.random() < 0.1);
-  if (!keep) return;
-  try {
-    await env.DB.prepare(
-      "INSERT INTO logs (job_id, user_id, ts, level, code, msg) VALUES (?,?,?,?,?,?)")
-      .bind(job.id, job.user_id, Date.now(), level, code, String(msg ?? "").slice(0, 300)).run();
-  } catch {}
-}
-
 async function nap(st, ms) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     if (st.stop) return;
-    await sleep(Math.min(250, end - Date.now()));
+    await sleep(Math.min(200, end - Date.now()));
   }
 }
 
-async function sendOne(env, job, cfg, hook, n, st) {
-  if (st.stop) return;
+/** 使える中で最も早く送れる Webhook を選ぶ。全滅なら null */
+function pick(state, at) {
+  let best = null;
+  for (const s of state) {
+    if (s.dead || s.busy) continue;
+    if (s.nextAt <= at) return s;
+    if (!best || s.nextAt < best.nextAt) best = s;
+  }
+  return best;
+}
+
+async function deliver(env, cfg, state, slot, n, st, log) {
   const body = JSON.stringify(build(cfg, n));
-  const tag = hook.label || String(hook.url).slice(-8);
+  const max = Math.min(cfg.retries + 4, 12);
+  let tries = 0;
 
-  for (let attempt = 0; attempt <= cfg.retries; attempt++) {
+  while (true) {
     if (st.stop) return;
+    tries++;
 
+    const tag = slot.h.label || String(slot.h.url).slice(-8);
     const ctrl = new AbortController();
     st.ctrls.add(ctrl);
-    let res;
+
+    let res = null, err = false;
     try {
-      res = await fetch(hook.url, {
+      res = await fetch(slot.h.url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
         signal: ctrl.signal,
       });
-    } catch (e) {
-      st.ctrls.delete(ctrl);
-      if (ctrl.signal.aborted) return;
-      if (attempt >= cfg.retries) break;
-      await nap(st, 600 * (attempt + 1));
-      continue;
-    }
+    } catch { err = true; }
     st.ctrls.delete(ctrl);
+    if (ctrl.signal.aborted) { slot.busy = false; return; }
 
-    if (res.status === 200 || res.status === 204) {
+    const t = Date.now();
+    slot.busy = false;
+
+    if (!err && (res.status === 200 || res.status === 204)) {
       st.sent++;
-      await writeLog(env, job, "ok", res.status, `${tag} #${n}`, cfg);
+      slot.nextAt = t + cfg.delay * 1000 + Math.random() * cfg.jitter * 1000;
+      log("ok", res.status, `${tag} #${n}`);
       return;
     }
 
-    if (res.status === 429) {
+    if (!err && res.status === 429) {
       let w = 1;
       try { w = Number((await res.json()).retry_after) || 1; }
       catch { w = Number(res.headers.get("retry-after")) || 1; }
-      await nap(st, Math.min(w, 8) * 1000);
-      continue;
+      slot.nextAt = t + Math.min(w, 8) * 1000;
+    } else if (!err && DEAD.has(res.status)) {
+      slot.dead = true;
+      slot.nextAt = Infinity;
+      log("error", res.status, `Webhook 無効: ${tag}`);
+    } else {
+      slot.nextAt = t + 400;
+      let d = "";
+      if (!err) { try { d = (await res.text()).slice(0, 150); } catch {} }
+      log("error", err ? 0 : res.status, `${tag} #${n} ${d}`);
     }
 
-    if (res.status === 404) {
-      st.failed++;
-      await writeLog(env, job, "error", 404, `Webhook 消失: ${tag}`, cfg);
-      return;
-    }
+    if (tries >= max) { st.failed++; log("error", 0, `断念: ${tag} #${n}`); return; }
 
-    if (res.status >= 500) {
-      if (attempt >= cfg.retries) break;
-      await nap(st, 800 * (attempt + 1));
-      continue;
-    }
+    // 待たずに別の Webhook へ切り替える
+    const alt = pick(state, Date.now());
+    if (!alt) { st.failed++; log("error", 0, `全 Webhook 冷却中: #${n}`); return; }
 
-    let detail = "";
-    try { detail = (await res.text()).slice(0, 200); } catch {}
-    st.failed++;
-    await writeLog(env, job, "error", res.status, `${tag} #${n} ${detail}`, cfg);
-    return;
+    const wait = alt.nextAt - Date.now();
+    if (wait > 0) await nap(st, Math.min(wait, 5000));
+    alt.busy = true;
+    slot = alt;
   }
-
-  if (st.stop) return;
-  st.failed++;
-  await writeLog(env, job, "error", 0, `再試行上限: ${tag}`, cfg);
 }
 
 export async function runJob(env, job) {
@@ -118,11 +117,34 @@ export async function runJob(env, job) {
   cfg.retries = Math.round(clamp(cfg.retries, 0, 8, DEFAULT_SETTINGS.retries));
   cfg.delay = clamp(cfg.delay, 0, 10, DEFAULT_SETTINGS.delay);
   cfg.jitter = clamp(cfg.jitter, 0, 5, DEFAULT_SETTINGS.jitter);
+  cfg.lanes = Math.round(clamp(cfg.lanes, 1, 16, DEFAULT_SETTINGS.lanes));
+  cfg.batch = Math.round(clamp(cfg.batch, 10, 300, DEFAULT_SETTINGS.batch));
 
   const st = { sent: fresh.sent || 0, failed: fresh.failed || 0, claimed: 0, stop: false, hard: false, ctrls: new Set() };
   st.claimed = st.sent + st.failed;
 
+  // ログはまとめて 1 回の INSERT にする（サブリクエスト削減）
+  const pending = [];
+  const log = (level, code, msg) => {
+    const keep = level === "error" || cfg.log_mode === "all"
+      || (cfg.log_mode === "sample" && Math.random() < 0.1);
+    if (!keep || pending.length >= 96) return;
+    pending.push([fresh.id, fresh.user_id, Date.now(), level, code, String(msg ?? "").slice(0, 300)]);
+  };
+  const flushLogs = async () => {
+    if (!pending.length) return;
+    const rows = pending.splice(0, 16);
+    const ph = rows.map(() => "(?,?,?,?,?,?)").join(",");
+    try {
+      await env.DB.prepare(`INSERT INTO logs (job_id,user_id,ts,level,code,msg) VALUES ${ph}`)
+        .bind(...rows.flat()).run();
+    } catch {}
+  };
+  const flushCount = () => env.DB.prepare("UPDATE jobs SET sent=?, failed=? WHERE id=?")
+    .bind(st.sent, st.failed, fresh.id).run();
+
   const finish = async (status) => {
+    await flushLogs();
     if (st.hard) {
       await env.DB.prepare("UPDATE jobs SET sent=?, failed=? WHERE id=?")
         .bind(st.sent, st.failed, fresh.id).run();
@@ -134,10 +156,10 @@ export async function runJob(env, job) {
     await release(env, fresh.id);
   };
 
-  // stopping で拾われた場合は、そのまま畳む（tick が stopping も拾うようにしたため）
   if (fresh.status === "stopping") {
     await finish("stopped");
-    await writeLog(env, fresh, "ok", 0, `終了 成功 ${st.sent} / 失敗 ${st.failed}`, cfg);
+    log("ok", 0, `終了 成功 ${st.sent} / 失敗 ${st.failed}`);
+    await flushLogs();
     return;
   }
 
@@ -145,7 +167,7 @@ export async function runJob(env, job) {
     "SELECT id, label, url FROM webhooks WHERE user_id = ? ORDER BY id").bind(fresh.user_id).all();
 
   if (!hooks.length) {
-    await writeLog(env, fresh, "error", 0, "Webhook 未登録", cfg);
+    log("error", 0, "Webhook 未登録");
     await finish("failed");
     return;
   }
@@ -156,13 +178,15 @@ export async function runJob(env, job) {
     "UPDATE jobs SET status='running', started_at=COALESCE(started_at,?) WHERE id=?")
     .bind(started, fresh.id).run();
 
+  const state = hooks.map((h) => ({ h, busy: false, nextAt: 0, dead: false }));
   const before = st.claimed;
   const deadline = started + WALL_BUDGET;
-  const batchEnd = st.claimed + BATCH_MAX;
-  let lastCheck = 0;
+  const batchEnd = st.claimed + cfg.batch;
+  const lanes = Math.max(1, Math.min(cfg.lanes, hooks.length, 16));
+  let lastCheck = 0, sinceFlush = 0;
 
   const checkStop = async () => {
-    if (Date.now() - lastCheck < 600) return st.stop;
+    if (Date.now() - lastCheck < 400) return st.stop;
     lastCheck = Date.now();
     const r = await env.DB.prepare("SELECT status FROM jobs WHERE id=?").bind(fresh.id).first();
     if (r?.status === "stopping") st.stop = true;
@@ -174,33 +198,48 @@ export async function runJob(env, job) {
     return st.stop;
   };
 
-  const lanes = Math.max(1, Math.min(Math.round(Number(cfg.concurrency) || 1), 3));
-
-  await Promise.all(Array.from({ length: lanes }, async (_, k) => {
-    let i = k;
+  await Promise.all(Array.from({ length: lanes }, async () => {
     while (true) {
       if (st.claimed >= fresh.total || st.claimed >= batchEnd) break;
       if (Date.now() > deadline) break;
       if (await checkStop()) break;
-      const hook = hooks[i++ % hooks.length];
+
+      const slot = pick(state, Date.now());
+      if (!slot) break;
+      slot.busy = true;
+
+      const wait = slot.nextAt - Date.now();
+      if (wait > 0) {
+        if (Date.now() + wait > deadline) { slot.busy = false; break; }
+        await nap(st, wait);
+        if (st.stop) { slot.busy = false; break; }
+      }
+
       st.claimed++;
-      await sendOne(env, fresh, cfg, hook, st.claimed, st);
-      await nap(st, cfg.delay * 1000 + Math.random() * cfg.jitter * 1000);
+      await deliver(env, cfg, state, slot, st.claimed, st, log);
+
+      if (++sinceFlush >= 20) { sinceFlush = 0; await flushCount(); await flushLogs(); }
     }
   }));
 
   const done = st.sent + st.failed >= fresh.total;
   const progressed = st.sent + st.failed > before;
 
-  // 進捗ゼロで終わったら failed にして running のまま残さない
   await finish(done ? "done" : st.stop ? "stopped" : progressed ? "running" : "failed");
 
   if (done || st.stop) {
-    await writeLog(env, fresh, "ok", 0,
-      `${st.hard ? "強制停止" : "終了"} 成功 ${st.sent} / 失敗 ${st.failed}`, cfg);
+    log("ok", 0, `${st.hard ? "強制停止" : "終了"} 成功 ${st.sent} / 失敗 ${st.failed}`);
   } else if (!progressed) {
-    await writeLog(env, fresh, "error", 0, "進捗なしのため中断", cfg);
+    log("error", 0, "進捗なしのため中断");
   }
+
+  // 死んだ Webhook は掃除
+  const deadIds = state.filter((s) => s.dead).map((s) => s.h.id);
+  for (const id of deadIds) {
+    try { await env.DB.prepare("DELETE FROM webhooks WHERE id=? AND user_id=?").bind(id, fresh.user_id).run(); } catch {}
+  }
+
+  await flushLogs();
 
   if (done && cfg.delete_webhook) {
     for (const h of hooks) {
@@ -213,7 +252,6 @@ export async function tick(env) {
   const stale = Date.now() - LOCK_MS;
   try { await env.DB.prepare("DELETE FROM locks WHERE at < ?").bind(stale).run(); } catch {}
 
-  // stopping も拾う（拾わないと永久に残る）
   const { results } = await env.DB.prepare(
     `SELECT j.* FROM jobs j
      LEFT JOIN locks l ON l.job_id = j.id
