@@ -78,7 +78,6 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id);
 CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_job ON logs(job_id, id);
 CREATE INDEX IF NOT EXISTS idx_hooks_user ON webhooks(user_id);
-CREATE INDEX IF NOT EXISTS idx_hooks_channel ON webhooks(user_id, channel_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_locks_at ON locks(at);
