@@ -43,3 +43,5 @@ h2 { font-size: 15px; margin: 22px 0 8px; color: #b9b9c4; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
 .ch { display: flex; align-items: center; gap: 6px; font-size: 14px; margin: 2px 0; }
 .ch input[type=checkbox] { width: auto; }
+.ch label { margin: 0; flex: 1; min-width: 0; }
+.ch .cnt { width: 4.5em; flex: none; padding: 4px 6px; }
