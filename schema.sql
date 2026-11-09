@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS settings (
   username_override TEXT NOT NULL DEFAULT '',
   avatar TEXT NOT NULL DEFAULT '',
   delete_webhook INTEGER NOT NULL DEFAULT 0,
-  log_mode TEXT NOT NULL DEFAULT 'sample'
+  log_mode TEXT NOT NULL DEFAULT 'sample',
+  target_channels TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS webhooks (
@@ -39,6 +40,8 @@ CREATE TABLE IF NOT EXISTS webhooks (
   user_id INTEGER NOT NULL,
   label TEXT,
   url TEXT NOT NULL,
+  channel_id TEXT NOT NULL DEFAULT '',
+  channel_name TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
 
@@ -75,6 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id);
 CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_job ON logs(job_id, id);
 CREATE INDEX IF NOT EXISTS idx_hooks_user ON webhooks(user_id);
+CREATE INDEX IF NOT EXISTS idx_hooks_channel ON webhooks(user_id, channel_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_locks_at ON locks(at);
