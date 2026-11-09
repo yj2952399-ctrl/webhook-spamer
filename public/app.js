@@ -3,6 +3,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 const ACTIVE = ["queued", "running", "stopping"];
+let targetSet = new Set();
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
@@ -56,7 +57,8 @@ async function boot() {
   if (d.token_set) $("d-token").placeholder = `保存済み (${d.token_hint})`;
   if (d.guild_id) $("d-guild").value = d.guild_id;
 
-  loadHooks(); loadJobs();
+  targetSet = new Set((s.target_channels || []).map(String));
+  loadChannels(); loadHooks(); loadJobs();
 }
 
 async function saveSettings() {
@@ -82,35 +84,57 @@ async function saveSettings() {
   alert("保存しました");
 }
 
+/* ---- 対象チャンネル ---- */
+
+async function loadChannels() {
+  const list = await api("/api/channels");
+  $("targets").innerHTML = list.length
+    ? list.map((c) =>
+      `<label class="ch"><input type="checkbox" value="${esc(c.channel_id)}"
+        ${targetSet.has(String(c.channel_id)) ? "checked" : ""}>
+       #${esc(c.channel_name || c.channel_id)} <span class="note">${c.hooks} 本</span></label>`).join("")
+    : `<div class="note">チャンネル情報つきの Webhook がありません（手動追加でチャンネルIDを入れるか、自動発行してください）</div>`;
+}
+
+const allTargets = () =>
+  document.querySelectorAll("#targets input").forEach((el) => { el.checked = true; });
+const noneTargets = () =>
+  document.querySelectorAll("#targets input").forEach((el) => { el.checked = false; });
+
 /* ---- Webhook 手動 ---- */
 
 async function addHooks() {
   const r = await api("/api/webhooks", {
     method: "POST",
-    body: JSON.stringify({ label: $("hlabel").value, urls: $("hurls").value }),
+    body: JSON.stringify({
+      label: $("hlabel").value,
+      urls: $("hurls").value,
+      channel_id: $("hchannel").value,
+    }),
   });
   if (!r.ok) return alert(r.error || "追加できませんでした");
   $("hurls").value = "";
   alert(`${r.added} 件追加（${r.skipped || 0} 件は重複）`);
-  loadHooks();
+  loadHooks(); loadChannels();
 }
 
 async function loadHooks() {
   const list = await api("/api/webhooks");
   $("hlist").innerHTML = list.length
     ? list.map((h) =>
-      `<li><b>${esc(h.label || "-")}</b> <code>…${esc(h.url.slice(-10))}</code>
+      `<li>${h.channel_id ? `<span class="note">#${esc(h.channel_name || h.channel_id)}</span>` : ""}
+       <b>${esc(h.label || "-")}</b> <code>…${esc(h.url.slice(-10))}</code>
        <button onclick="delHook(${h.id})">削除</button></li>`).join("")
     : `<li class="note">まだ登録がありません</li>`;
 }
 
-const delHook = async (id) => { await api("/api/webhooks/" + id, { method: "DELETE" }); loadHooks(); };
+const delHook = async (id) => { await api("/api/webhooks/" + id, { method: "DELETE" }); loadHooks(); loadChannels(); };
 
 const clearHooks = async () => {
   if (!confirm("登録済みの Webhook を全部消します。")) return;
   const r = await api("/api/webhooks", { method: "DELETE" });
   alert(`${r.deleted || 0} 件削除しました`);
-  loadHooks();
+  loadHooks(); loadChannels();
 };
 
 /* ---- トークン / 自動発行 ---- */
@@ -137,23 +161,41 @@ async function checkDiscord() {
     `${esc(r.user.bot ? "BOT" : "ユーザー")} <b>${esc(r.user.name)}</b> / ` +
     `サーバー <b>${esc(r.guild.name)}</b> — 発行可能 ${usable} チャンネル`;
 
+  const dflt = Number($("d-count").value) || 0;
   $("d-channels").innerHTML = r.channels.length
     ? r.channels.map((c) =>
-      `<label class="ch"><input type="checkbox" value="${c.id}" ${c.can ? "checked" : "disabled"}>
-       #${esc(c.name)}${c.can ? "" : " <span class=\"note\">権限なし</span>"}</label>`).join("")
+      `<div class="ch">
+         <label><input type="checkbox" value="${c.id}" ${c.can ? "checked" : "disabled"}>
+         #${esc(c.name)}${c.can ? "" : " <span class=\"note\">権限なし</span>"}</label>
+         <input class="cnt" data-id="${c.id}" type="number" min="0" max="10"
+           value="${c.can ? dflt : 0}" ${c.can ? "" : "disabled"}>
+       </div>`).join("")
     : `<div class="note">テキストチャンネルが見つかりません</div>`;
 }
 
-async function autoHooks() {
-  const channels = [...document.querySelectorAll("#d-channels input:checked")].map((el) => el.value);
-  const count = Number($("d-count").value);
-  if (!Number.isFinite(count) || count < 1) return alert("発行数を入れてください");
+const fillCounts = () => {
+  const n = Math.min(Math.max(Number($("d-count").value) || 0, 0), 10);
+  document.querySelectorAll("#d-channels .cnt").forEach((el) => {
+    if (!el.disabled) el.value = n;
+  });
+};
 
-  if (!confirm(`${count} 個の Webhook を発行します。よろしいですか？`)) return;
+async function autoHooks() {
+  const channels = [];
+  for (const cb of document.querySelectorAll("#d-channels input[type=checkbox]")) {
+    if (!cb.checked || cb.disabled) continue;
+    const el = document.querySelector(`#d-channels .cnt[data-id="${cb.value}"]`);
+    const count = Math.min(Math.max(Number(el?.value) || 0, 0), 10);
+    if (count > 0) channels.push({ id: cb.value, count });
+  }
+  if (!channels.length) return alert("チャンネルと発行数を指定してください");
+
+  const sum = channels.reduce((a, c) => a + c.count, 0);
+  if (!confirm(`${channels.length} チャンネルに計 ${sum} 個の Webhook を発行します。よろしいですか？`)) return;
 
   const r = await api("/api/webhooks/auto", {
     method: "POST",
-    body: JSON.stringify({ count, channels }),
+    body: JSON.stringify({ channels }),
   });
 
   if (!r.ok) return alert(r.error || "発行できませんでした");
@@ -161,7 +203,7 @@ async function autoHooks() {
   let msg = `${r.added} 件登録しました（対象 ${r.channels} チャンネル）`;
   if (r.errors?.length) msg += `\n\n失敗:\n${r.errors.join("\n")}`;
   alert(msg);
-  loadHooks();
+  loadHooks(); loadChannels();
 }
 
 /* ---- ジョブ ---- */
@@ -170,12 +212,21 @@ async function startJob() {
   const total = Number($("total").value);
   if (!Number.isFinite(total) || total < 1) return alert("投稿数を入れてください");
 
-  let r = await api("/api/jobs", { method: "POST", body: JSON.stringify({ total }) });
+  const channels = [...document.querySelectorAll("#targets input:checked")].map((el) => el.value);
+  if (channels.length) {
+    const ok = confirm(
+      `${channels.length} チャンネル分の Webhook だけに ${total} 通送ります。よろしいですか？`);
+    if (!ok) return;
+  }
+
+  const body = () => JSON.stringify({ total, channels });
+
+  let r = await api("/api/jobs", { method: "POST", body: body() });
 
   if (r.__status === 409) {
     if (!confirm(`${r.error}\n強制停止してから開始しますか？`)) return;
     await api("/api/jobs/stop-all", { method: "POST" });
-    r = await api("/api/jobs", { method: "POST", body: JSON.stringify({ total }) });
+    r = await api("/api/jobs", { method: "POST", body: body() });
   }
 
   if (!r.id) return alert(r.error || "開始できませんでした");
