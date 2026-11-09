@@ -33,12 +33,23 @@
     <div id="active"></div>
     <button id="stopAll" class="danger" hidden onclick="stopAll()">全部 強制停止</button>
     <label>投稿数 <input id="total" type="number" value="100" min="1" max="20000"></label>
+
+    <h2>対象チャンネル</h2>
+    <p class="note">未選択なら登録済み Webhook 全部に送ります。選んだ場合はそのチャンネルの Webhook だけに飛びます。</p>
+    <div id="targets"></div>
+    <div class="row">
+      <button onclick="allTargets()">全選択</button>
+      <button onclick="noneTargets()">全解除</button>
+      <button onclick="loadChannels()">更新</button>
+    </div>
+
     <button onclick="startJob()">開始</button>
   </div>
 
   <div class="tab" id="tab-hooks" hidden>
     <h2>手動追加</h2>
     <input id="hlabel" placeholder="ラベル">
+    <input id="hchannel" placeholder="チャンネルID（任意・分けるなら入力）">
     <textarea id="hurls" rows="4" placeholder="URL を改行 or カンマ区切り"></textarea>
     <div class="row">
       <button onclick="addHooks()">追加</button>
@@ -49,7 +60,7 @@
     <h2>自動発行</h2>
     <p class="note">
       トークンは Bot でもユーザーでも可。<b>Webhook の管理</b>権限があるチャンネルにだけ作ります。
-      チャンネルあたり最大 10 個。発行後は下の一覧に入ります。
+      チャンネルごとに発行数を指定してください（最大 10・0 で除外）。発行後は下の一覧に入ります。
     </p>
     <label>トークン <input id="d-token" type="password" placeholder="保存済みなら空欄でOK" autocomplete="off"></label>
     <label>サーバーID <input id="d-guild" placeholder="サーバー名を右クリック → ID をコピー"></label>
@@ -59,7 +70,10 @@
     </div>
     <div id="d-info" class="note"></div>
     <div id="d-channels"></div>
-    <label>発行数 <input id="d-count" type="number" value="10" min="1" max="200"></label>
+    <div class="row">
+      <label>全ch に <input id="d-count" type="number" value="10" min="0" max="10"></label>
+      <button onclick="fillCounts()">数を反映</button>
+    </div>
     <button onclick="autoHooks()">自動発行</button>
   </div>
 
