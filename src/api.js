@@ -70,20 +70,35 @@ export async function listHooks(env, me) {
 
 async function insertHooks(env, me, rows) {
   const { results: exist } = await env.DB.prepare(
-    "SELECT url FROM webhooks WHERE user_id=?").bind(me.id).all();
-  const known = new Set(exist.map((r) => r.url));
+    "SELECT id, url FROM webhooks WHERE user_id=?").bind(me.id).all();
+  const known = new Map(exist.map((r) => [r.url, r.id]));
 
-  let added = 0;
+  let added = 0, updated = 0, skipped = 0;
   for (const r of rows) {
-    if (!r.url || known.has(r.url)) continue;
-    known.add(r.url);
+    const url = String(r.url || "").trim();
+    if (!url) { skipped++; continue; }
+
+    const label = String(r.label || "").slice(0, 40);
+    const cid = String(r.channel_id || "");
+    const cname = String(r.channel_name || "").slice(0, 80);
+
+    const id = known.get(url);
+    if (id) {
+      // 同じ URL が既にある → チャンネル紐付けだけ更新
+      await env.DB.prepare(
+        "UPDATE webhooks SET label=?, channel_id=?, channel_name=? WHERE id=? AND user_id=?")
+        .bind(label, cid, cname, id, me.id).run();
+      updated++;
+      continue;
+    }
+
     await env.DB.prepare(
       "INSERT INTO webhooks (user_id,label,url,channel_id,channel_name,created_at) VALUES (?,?,?,?,?,?)")
-      .bind(me.id, String(r.label || "").slice(0, 40), r.url,
-        String(r.channel_id || ""), String(r.channel_name || "").slice(0, 80), Date.now()).run();
+      .bind(me.id, label, url, cid, cname, Date.now()).run();
+    known.set(url, -1);
     added++;
   }
-  return added;
+  return { added, updated, skipped };
 }
 
 export async function addHooks(req, env, me) {
@@ -97,11 +112,11 @@ export async function addHooks(req, env, me) {
 
   if (!list.length) return json({ ok: false, error: "有効な Webhook URL がありません" }, 400);
 
-  const added = await insertHooks(env, me, list.map((url) => ({
+  const { added, updated } = await insertHooks(env, me, list.map((url) => ({
     label, url, channel_id: /^\d{5,25}$/.test(ch) ? ch : "", channel_name: "",
   })));
 
-  return json({ ok: true, added, skipped: list.length - added });
+  return json({ ok: true, added, updated, skipped: list.length - added - updated });
 }
 
 export async function delHook(env, me, id) {
@@ -210,13 +225,21 @@ export async function autoHooks(req, env, me) {
   const limit = Math.min([...quota.values()].reduce((a, n) => a + n, 0), 200);
 
   const { created, errors } = await discord.createWebhooks(info.auth, chans, quota, limit);
-  const added = await insertHooks(env, me, created.map((c) => ({
+  const { added, updated, skipped } = await insertHooks(env, me, created.map((c) => ({
     label: c.name, url: c.url, channel_id: c.channelId, channel_name: c.name,
   })));
 
+  // 作成はできたのに 1 件も登録できていない場合は必ず気付けるようにする
+  if (created.length && added + updated === 0) {
+    errors.unshift(`作成は ${created.length} 件成功しましたが登録できませんでした`);
+  }
+
   return json({
     ok: true,
+    created: created.length,
     added,
+    updated,
+    skipped,
     requested: limit,
     channels: chans.length,
     errors: errors.slice(0, 10),
