@@ -34,9 +34,10 @@ export default {
     if (p === "/api/webhooks") {
       if (m === "GET") return api.listHooks(env, me);
       if (m === "POST") return api.addHooks(req, env, me);
-      if (m === "DELETE") return api.clearHooks(env, me);
+      if (m === "DELETE") return api.clearHooks(env, me, url.searchParams.get("channel") || "");
     }
     if (p === "/api/webhooks/auto" && m === "POST") return api.autoHooks(req, env, me);
+    if (p === "/api/channels" && m === "GET") return api.listChannels(env, me);
 
     const wh = p.match(/^\/api\/webhooks\/(\d+)$/);
     if (wh && m === "DELETE") return api.delHook(env, me, Number(wh[1]));
