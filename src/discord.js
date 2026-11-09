@@ -123,22 +123,35 @@ export async function inspect(token, guildId) {
   };
 }
 
-/** 指定チャンネルへ均等に count 個作る */
-export async function createWebhooks(auth, channels, count) {
+/**
+ * チャンネルごとの quota に従って作る。
+ * quota: Map<channelId, number> / limit: 総数の上限
+ */
+export async function createWebhooks(auth, channels, quota, limit = Infinity) {
   const created = [];
   const errors = [];
-  const used = new Map(channels.map((c) => [c.id, 0]));
-  let guard = 0;
+  const left = new Map(channels.map((c) => [
+    c.id, Math.min(Math.max(Number(quota.get(c.id)) || 0, 0), PER_CHANNEL_MAX),
+  ]));
+  const dead = new Set();
 
-  while (created.length < count && guard < count * 8) {
-    guard++;
+  // 1 チャンネルに固まらないようラウンドロビンで並べる
+  const plan = [];
+  let more = true;
+  while (more && plan.length < limit) {
+    more = false;
+    for (const c of channels) {
+      const n = left.get(c.id) || 0;
+      if (n <= 0) continue;
+      left.set(c.id, n - 1);
+      plan.push(c);
+      more = true;
+      if (plan.length >= limit) break;
+    }
+  }
 
-    const open = channels.filter((c) => (used.get(c.id) || 0) < PER_CHANNEL_MAX);
-    if (!open.length) break;
-    open.sort((a, b) => (used.get(a.id) || 0) - (used.get(b.id) || 0));
-    const target = open[0];
-
-    used.set(target.id, (used.get(target.id) || 0) + 1);
+  for (const target of plan) {
+    if (dead.has(target.id)) continue;
 
     const r = await dapi(`/channels/${target.id}/webhooks`, auth, {
       method: "POST",
@@ -150,20 +163,11 @@ export async function createWebhooks(auth, channels, count) {
       continue;
     }
 
-    if (r.status === 403) {
-      errors.push(`#${target.name}: 権限なし`);
-      used.set(target.id, PER_CHANNEL_MAX);
-      continue;
-    }
-
-    if (r.status === 400 && /maximum/i.test(JSON.stringify(r.data || ""))) {
-      used.set(target.id, PER_CHANNEL_MAX);
-      continue;
-    }
+    if (r.status === 403) { errors.push(`#${target.name}: 権限なし`); dead.add(target.id); continue; }
+    if (r.status === 400 && /maximum/i.test(JSON.stringify(r.data || ""))) { dead.add(target.id); continue; }
 
     errors.push(`#${target.name}: ${r.status}`);
-    if ((used.get(target.id) || 0) >= PER_CHANNEL_MAX) continue;
-    used.set(target.id, PER_CHANNEL_MAX);
+    dead.add(target.id);
   }
 
   return { created, errors };
