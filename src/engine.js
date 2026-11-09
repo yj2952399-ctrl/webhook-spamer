@@ -119,6 +119,7 @@ export async function runJob(env, job) {
   cfg.jitter = clamp(cfg.jitter, 0, 5, DEFAULT_SETTINGS.jitter);
   cfg.lanes = Math.round(clamp(cfg.lanes, 1, 16, DEFAULT_SETTINGS.lanes));
   cfg.batch = Math.round(clamp(cfg.batch, 10, 300, DEFAULT_SETTINGS.batch));
+  cfg.target_channels = Array.isArray(cfg.target_channels) ? cfg.target_channels.map(String) : [];
 
   const st = { sent: fresh.sent || 0, failed: fresh.failed || 0, claimed: 0, stop: false, hard: false, ctrls: new Set() };
   st.claimed = st.sent + st.failed;
@@ -163,11 +164,21 @@ export async function runJob(env, job) {
     return;
   }
 
-  const { results: hooks } = await env.DB.prepare(
-    "SELECT id, label, url FROM webhooks WHERE user_id = ? ORDER BY id").bind(fresh.user_id).all();
+  const { results: all } = await env.DB.prepare(
+    "SELECT id, label, url, channel_id FROM webhooks WHERE user_id = ? ORDER BY id")
+    .bind(fresh.user_id).all();
 
-  if (!hooks.length) {
+  // チャンネル指定があればそのチャンネルの Webhook だけに絞る
+  const want = new Set(cfg.target_channels);
+  const hooks = want.size ? all.filter((h) => want.has(String(h.channel_id || ""))) : all;
+
+  if (!all.length) {
     log("error", 0, "Webhook 未登録");
+    await finish("failed");
+    return;
+  }
+  if (!hooks.length) {
+    log("error", 0, `対象チャンネルに Webhook がありません（${want.size} ch 指定）`);
     await finish("failed");
     return;
   }
@@ -233,7 +244,7 @@ export async function runJob(env, job) {
     log("error", 0, "進捗なしのため中断");
   }
 
-  // 死んだ Webhook は掃除
+  // 死んだ Webhook は掃除（対象にしたものだけ）
   const deadIds = state.filter((s) => s.dead).map((s) => s.h.id);
   for (const id of deadIds) {
     try { await env.DB.prepare("DELETE FROM webhooks WHERE id=? AND user_id=?").bind(id, fresh.user_id).run(); } catch {}
