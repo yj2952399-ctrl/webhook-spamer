@@ -24,11 +24,18 @@ export async function putSettings(req, env, me) {
   const b = await req.json().catch(() => ({}));
   const v = normalizeInput(b);
 
+  // target_channels は実行画面で管理しているので、送られてこなければ現状維持
+  if (!("target_channels" in b)) {
+    const cur = await env.DB.prepare("SELECT target_channels FROM settings WHERE user_id=?")
+      .bind(me.id).first();
+    v.target_channels = normalizeInput({ target_channels: cur?.target_channels || "" }).target_channels;
+  }
+
   await env.DB.prepare(
     `INSERT INTO settings (user_id, content, delay, jitter, concurrency, retries, ping_everyone,
        embed, embed_title, embed_desc, embed_color, image, thumbnail, tts,
-       username_override, avatar, delete_webhook, log_mode)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       username_override, avatar, delete_webhook, log_mode, target_channels)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(user_id) DO UPDATE SET
        content=excluded.content, delay=excluded.delay, jitter=excluded.jitter,
        concurrency=excluded.concurrency, retries=excluded.retries,
@@ -37,10 +44,12 @@ export async function putSettings(req, env, me) {
        embed_color=excluded.embed_color, image=excluded.image,
        thumbnail=excluded.thumbnail, tts=excluded.tts,
        username_override=excluded.username_override, avatar=excluded.avatar,
-       delete_webhook=excluded.delete_webhook, log_mode=excluded.log_mode`)
+       delete_webhook=excluded.delete_webhook, log_mode=excluded.log_mode,
+       target_channels=excluded.target_channels`)
     .bind(me.id, v.content, v.delay, v.jitter, v.concurrency, v.retries, v.ping_everyone,
       v.embed, v.embed_title, v.embed_desc, v.embed_color, v.image, v.thumbnail, v.tts,
-      v.username_override, v.avatar, v.delete_webhook, v.log_mode).run();
+      v.username_override, v.avatar, v.delete_webhook, v.log_mode,
+      v.target_channels.join(",")).run();
 
   await env.DB.prepare(
     `INSERT INTO tuning (user_id, batch, lanes) VALUES (?,?,?)
@@ -54,7 +63,8 @@ export async function putSettings(req, env, me) {
 
 export async function listHooks(env, me) {
   const { results } = await env.DB.prepare(
-    "SELECT id, label, url FROM webhooks WHERE user_id=? ORDER BY id").bind(me.id).all();
+    "SELECT id, label, url, channel_id, channel_name FROM webhooks WHERE user_id=? ORDER BY id")
+    .bind(me.id).all();
   return json(results);
 }
 
@@ -67,15 +77,18 @@ async function insertHooks(env, me, rows) {
   for (const r of rows) {
     if (!r.url || known.has(r.url)) continue;
     known.add(r.url);
-    await env.DB.prepare("INSERT INTO webhooks (user_id,label,url,created_at) VALUES (?,?,?,?)")
-      .bind(me.id, String(r.label || "").slice(0, 40), r.url, Date.now()).run();
+    await env.DB.prepare(
+      "INSERT INTO webhooks (user_id,label,url,channel_id,channel_name,created_at) VALUES (?,?,?,?,?,?)")
+      .bind(me.id, String(r.label || "").slice(0, 40), r.url,
+        String(r.channel_id || ""), String(r.channel_name || "").slice(0, 80), Date.now()).run();
     added++;
   }
   return added;
 }
 
 export async function addHooks(req, env, me) {
-  const { label = "", urls = "" } = await req.json().catch(() => ({}));
+  const { label = "", urls = "", channel_id = "" } = await req.json().catch(() => ({}));
+  const ch = String(channel_id).trim();
 
   const list = [...new Set(String(urls)
     .split(/[\s,]+/)
@@ -84,7 +97,10 @@ export async function addHooks(req, env, me) {
 
   if (!list.length) return json({ ok: false, error: "有効な Webhook URL がありません" }, 400);
 
-  const added = await insertHooks(env, me, list.map((url) => ({ label, url })));
+  const added = await insertHooks(env, me, list.map((url) => ({
+    label, url, channel_id: /^\d{5,25}$/.test(ch) ? ch : "", channel_name: "",
+  })));
+
   return json({ ok: true, added, skipped: list.length - added });
 }
 
@@ -93,9 +109,22 @@ export async function delHook(env, me, id) {
   return json({ ok: true });
 }
 
-export async function clearHooks(env, me) {
-  const r = await env.DB.prepare("DELETE FROM webhooks WHERE user_id=?").bind(me.id).run();
+export async function clearHooks(env, me, channel = "") {
+  const ch = String(channel || "").trim();
+  const r = ch
+    ? await env.DB.prepare("DELETE FROM webhooks WHERE user_id=? AND channel_id=?")
+      .bind(me.id, ch).run()
+    : await env.DB.prepare("DELETE FROM webhooks WHERE user_id=?").bind(me.id).run();
   return json({ ok: true, deleted: r.meta.changes });
+}
+
+/** 登録済み Webhook をチャンネル単位で集計 */
+export async function listChannels(env, me) {
+  const { results } = await env.DB.prepare(
+    `SELECT channel_id, MAX(channel_name) AS channel_name, COUNT(*) AS hooks
+     FROM webhooks WHERE user_id=? AND channel_id<>'' GROUP BY channel_id ORDER BY channel_id`)
+    .bind(me.id).all();
+  return json(results);
 }
 
 /* ---- トークン ---- */
@@ -146,7 +175,7 @@ export async function checkDiscord(env, me) {
 
 export async function autoHooks(req, env, me) {
   const b = await req.json().catch(() => ({}));
-  const want = Math.round(Math.min(Math.max(Number(b.count) || 10, 1), 200));
+  const dflt = Math.round(Math.min(Math.max(Number(b.count) || 10, 1), discord.PER_CHANNEL_MAX));
 
   const row = await env.DB.prepare("SELECT token, guild_id FROM discord WHERE user_id=?")
     .bind(me.id).first();
@@ -159,21 +188,36 @@ export async function autoHooks(req, env, me) {
   catch (e) { return json({ ok: false, error: e.message }, 400); }
 
   const allowed = new Set(info.channels.filter((c) => c.can).map((c) => c.id));
-  let targets = Array.isArray(b.channels) ? b.channels.map(String).filter((id) => allowed.has(id)) : [];
-  if (!targets.length) targets = [...allowed];
-  if (!targets.length) return json({ ok: false, error: "Webhook を作れるチャンネルがありません" }, 400);
 
-  const chans = info.channels.filter((c) => targets.includes(c.id));
-  const limit = Math.min(want, chans.length * discord.PER_CHANNEL_MAX);
+  // { channels:[{id,count}] } も { channels:["id"], count } も受ける
+  const quota = new Map();
+  for (const item of Array.isArray(b.channels) ? b.channels : []) {
+    const obj = item && typeof item === "object";
+    const id = String(obj ? item.id : item);
+    if (!allowed.has(id)) continue;
+    const n = obj
+      ? Math.round(Math.min(Math.max(Number(item.count) || 0, 0), discord.PER_CHANNEL_MAX))
+      : dflt;
+    if (n > 0) quota.set(id, n);
+  }
 
-  const { created, errors } = await discord.createWebhooks(info.auth, chans, limit);
-  const added = await insertHooks(env, me, created.map((c) => ({ label: c.name, url: c.url })));
+  if (!quota.size) {
+    if (!allowed.size) return json({ ok: false, error: "Webhook を作れるチャンネルがありません" }, 400);
+    for (const id of allowed) quota.set(id, dflt);
+  }
+
+  const chans = info.channels.filter((c) => quota.has(c.id));
+  const limit = Math.min([...quota.values()].reduce((a, n) => a + n, 0), 200);
+
+  const { created, errors } = await discord.createWebhooks(info.auth, chans, quota, limit);
+  const added = await insertHooks(env, me, created.map((c) => ({
+    label: c.name, url: c.url, channel_id: c.channelId, channel_name: c.name,
+  })));
 
   return json({
     ok: true,
     added,
-    requested: want,
-    attempted: limit,
+    requested: limit,
     channels: chans.length,
     errors: errors.slice(0, 10),
   });
@@ -219,6 +263,14 @@ export async function createJob(req, env, me) {
   if (tune) {
     snapshot.batch = Math.round(clamp(tune.batch, 10, 300, DEFAULT_SETTINGS.batch));
     snapshot.lanes = Math.round(clamp(tune.lanes, 1, 16, DEFAULT_SETTINGS.lanes));
+  }
+
+  // 指定があればそのチャンネルだけを対象にする（設定にも残す）
+  if (Array.isArray(b.channels)) {
+    snapshot.target_channels = [...new Set(b.channels.map(String))]
+      .filter((id) => /^\d{5,25}$/.test(id)).slice(0, 200);
+    await env.DB.prepare("UPDATE settings SET target_channels=? WHERE user_id=?")
+      .bind(snapshot.target_channels.join(","), me.id).run();
   }
 
   const r = await env.DB.prepare(
