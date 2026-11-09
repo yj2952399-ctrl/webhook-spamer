@@ -1,0 +1,1 @@
+ALTER TABLE webhooks ADD COLUMN channel_id TEXT NOT NULL DEFAULT '';
