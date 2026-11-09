@@ -5,10 +5,20 @@ export const DEFAULT_SETTINGS = {
   ping_everyone: 0, embed: 0, embed_title: "{rand}", embed_desc: "{i}",
   embed_color: 0x5865f2, image: "", thumbnail: "", tts: 0,
   username_override: "", avatar: "", delete_webhook: 0, log_mode: "sample",
-  lanes: 6, batch: 60,
+  lanes: 6, batch: 60, target_channels: [],
 };
 
 const LOG_MODES = ["sample", "all", "errors"];
+
+const toIds = (x) => {
+  const arr = Array.isArray(x) ? x : String(x ?? "").split(/[\s,]+/);
+  const out = [];
+  for (const v of arr) {
+    const id = String(v).trim();
+    if (/^\d{5,25}$/.test(id) && !out.includes(id)) out.push(id);
+  }
+  return out.slice(0, 200);
+};
 
 export function normalizeSettings(row) {
   const out = { ...DEFAULT_SETTINGS };
@@ -47,6 +57,7 @@ export function normalizeInput(body) {
 
   v.username_override = String(v.username_override ?? "").trim().slice(0, 80);
   v.log_mode = LOG_MODES.includes(v.log_mode) ? v.log_mode : DEFAULT_SETTINGS.log_mode;
+  v.target_channels = toIds(v.target_channels);
 
   return v;
 }
