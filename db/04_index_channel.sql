@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_hooks_channel ON webhooks(user_id, channel_id);
