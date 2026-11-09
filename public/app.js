@@ -114,7 +114,7 @@ async function addHooks() {
   });
   if (!r.ok) return alert(r.error || "追加できませんでした");
   $("hurls").value = "";
-  alert(`${r.added} 件追加（${r.skipped || 0} 件は重複）`);
+  alert(`追加 ${r.added} 件 / 更新 ${r.updated || 0} 件`);
   loadHooks(); loadChannels();
 }
 
@@ -200,9 +200,15 @@ async function autoHooks() {
 
   if (!r.ok) return alert(r.error || "発行できませんでした");
 
-  let msg = `${r.added} 件登録しました（対象 ${r.channels} チャンネル）`;
-  if (r.errors?.length) msg += `\n\n失敗:\n${r.errors.join("\n")}`;
+  let msg = `作成 ${r.created} 件 / 登録 ${r.added} 件`;
+  if (r.updated) msg += `（既存 ${r.updated} 件は紐付け更新）`;
+  if (r.skipped) msg += `（登録不可 ${r.skipped} 件）`;
+  if (r.created > 0 && r.added + (r.updated || 0) === 0) {
+    msg += "\n\n※ 作成自体は成功しています。下の内容を確認してください。";
+  }
+  if (r.errors?.length) msg += `\n\n${r.errors.join("\n")}`;
   alert(msg);
+
   loadHooks(); loadChannels();
 }
 
@@ -214,8 +220,7 @@ async function startJob() {
 
   const channels = [...document.querySelectorAll("#targets input:checked")].map((el) => el.value);
   if (channels.length) {
-    const ok = confirm(
-      `${channels.length} チャンネル分の Webhook だけに ${total} 通送ります。よろしいですか？`);
+    const ok = confirm(`${channels.length} チャンネル分の Webhook だけに ${total} 通送ります。よろしいですか？`);
     if (!ok) return;
   }
 
