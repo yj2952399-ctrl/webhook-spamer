@@ -123,6 +123,14 @@ export async function inspect(token, guildId) {
   };
 }
 
+/** 作成レスポンスから URL を取り出す。返らない場合は id と token で組み立てる */
+function webhookUrl(data) {
+  const d = data && typeof data === "object" ? data : {};
+  if (typeof d.url === "string" && d.url) return d.url;
+  if (d.id && d.token) return `https://discord.com/api/webhooks/${d.id}/${d.token}`;
+  return "";
+}
+
 /**
  * チャンネルごとの quota に従って作る。
  * quota: Map<channelId, number> / limit: 総数の上限
@@ -158,8 +166,13 @@ export async function createWebhooks(auth, channels, quota, limit = Infinity) {
       body: { name: "raider" },
     });
 
-    if (r.status === 200 && r.data?.url) {
-      created.push({ channelId: target.id, name: target.name, url: r.data.url });
+    const okStatus = r.status >= 200 && r.status < 300;
+    const url = webhookUrl(r.data);
+
+    // 成功しているのに url が返らないことがあるので、2xx は必ず成功扱い
+    if (okStatus) {
+      created.push({ channelId: target.id, name: target.name, url });
+      if (!url) errors.push(`#${target.name}: 作成成功だが URL 不明 (${r.status})`);
       continue;
     }
 
