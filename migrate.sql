@@ -23,3 +23,9 @@ UPDATE settings SET log_mode       = 'sample'  WHERE log_mode       IS NULL OR l
 -- 3) settings 行が無いユーザーを補完
 INSERT INTO settings (user_id)
 SELECT id FROM users WHERE id NOT IN (SELECT user_id FROM settings);
+
+-- 4) チャンネル単位の指定に対応
+ALTER TABLE webhooks ADD COLUMN channel_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE webhooks ADD COLUMN channel_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE settings ADD COLUMN target_channels TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_hooks_channel ON webhooks(user_id, channel_id);
