@@ -224,26 +224,29 @@ export async function autoHooks(req, env, me) {
   const chans = info.channels.filter((c) => quota.has(c.id));
   const limit = Math.min([...quota.values()].reduce((a, n) => a + n, 0), 200);
 
-  const { created, errors } = await discord.createWebhooks(info.auth, chans, quota, limit);
-  const { added, updated, skipped } = await insertHooks(env, me, created.map((c) => ({
-    label: c.name, url: c.url, channel_id: c.channelId, channel_name: c.name,
-  })));
+  try {
+    const { created, errors } = await discord.createWebhooks(info.auth, chans, quota, limit);
+    const { added, updated, skipped } = await insertHooks(env, me, created.map((c) => ({
+      label: c.name, url: c.url, channel_id: c.channelId, channel_name: c.name,
+    })));
 
-  // 作成はできたのに 1 件も登録できていない場合は必ず気付けるようにする
-  if (created.length && added + updated === 0) {
-    errors.unshift(`作成は ${created.length} 件成功しましたが登録できませんでした`);
+    if (created.length && added + updated === 0) {
+      errors.unshift(`作成は ${created.length} 件成功しましたが登録できませんでした`);
+    }
+
+    return json({
+      ok: true,
+      created: created.length,
+      added,
+      updated,
+      skipped,
+      requested: limit,
+      channels: chans.length,
+      errors: errors.slice(0, 10),
+    });
+  } catch (e) {
+    return json({ ok: false, error: `発行処理でエラー: ${e?.message || String(e)}` }, 500);
   }
-
-  return json({
-    ok: true,
-    created: created.length,
-    added,
-    updated,
-    skipped,
-    requested: limit,
-    channels: chans.length,
-    errors: errors.slice(0, 10),
-  });
 }
 
 /* ---- ジョブ ---- */
